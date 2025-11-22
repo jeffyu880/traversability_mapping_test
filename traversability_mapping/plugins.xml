@@ -1,0 +1,5 @@
+<library path="tm_planner_lib">
+  <class name="tm_planner/TMPlanner" type="tm_planner::TMPlanner" base_class_type="nav2_core::GlobalPlanner">
+    <description>This is a nav2 planner plugin by Tixiao Shan.</description>
+  </class>
+</library>

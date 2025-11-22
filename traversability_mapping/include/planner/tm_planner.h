@@ -1,48 +1,68 @@
-#include "utility.h"
-// this is a plugin that receives path from PRM global planner and pass it to move_base
-#ifndef tm_planner_CPP
-#define tm_planner_CPP
+#ifndef TM_PLANNER_H_
+#define TM_PLANNER_H_
+
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <nav2_core/global_planner.hpp>
+#include <nav2_costmap_2d/costmap_2d_ros.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <pluginlib/class_list_macros.hpp>
 
 namespace tm_planner {
 
-
-    class TMPlanner : public nav_core::BaseGlobalPlanner {
+    class TMPlanner : public nav2_core::GlobalPlanner {
 
     public:
-        ros::NodeHandle nh;
+        rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
 
-        tf::TransformListener listener;
-        tf::StampedTransform transform;
+        std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+        std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-        ros::Subscriber subPath;
-        ros::Publisher pubGoal;
+        rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr subPath;
+        rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pubGoal;
 
         // visualize twist command
-        ros::Subscriber subTwistCommand1; // twist command from move_base
-        ros::Subscriber subTwistCommand2; // twist command from move_base
-        ros::Publisher pubTwistCommand; // adjust twist command height to show above the robot
+        rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr subTwistCommand1; // twist command from nav2
+        rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr subTwistCommand2; // twist command from nav2
+        rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubTwistCommand; // adjust twist command height to show above the robot
 
-        nav_msgs::Path globalPath;
+        nav_msgs::msg::Path globalPath;
 
         std::mutex mtx;
 
         TMPlanner(); 
-        TMPlanner(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
-        /** overridden classes from interface nav_core::BaseGlobalPlanner **/
-        void initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros);
+        ~TMPlanner() = default;
 
-        void pathHandler(const nav_msgs::Path::ConstPtr& pathMsg);
+        // overridden classes from interface nav2_core::GlobalPlanner
+        void configure(
+            const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
+            std::string name, 
+            std::shared_ptr<tf2_ros::Buffer> tf,
+            std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
+
+        void cleanup() override;
+        void activate() override;
+        void deactivate() override;
+
+        nav_msgs::msg::Path createPlan(
+            const geometry_msgs::msg::PoseStamped & start,
+            const geometry_msgs::msg::PoseStamped & goal) override;
+
+        void pathHandler(const nav_msgs::msg::Path::SharedPtr pathMsg);
+
         // visualize twist command
-        void twistCommandHandler(const nav_msgs::Path::ConstPtr& pathMsg);
+        void twistCommandHandler(const nav_msgs::msg::Path::SharedPtr pathMsg);
 
-        bool makePlan(const geometry_msgs::PoseStamped& start, 
-                        const geometry_msgs::PoseStamped& goal, 
-                        std::vector<geometry_msgs::PoseStamped>& plan);  
-
+    private:
+        std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
+        std::string global_frame_, name_;
+        bool configured_;
     };
 
-
-};
-
+}
 
 #endif

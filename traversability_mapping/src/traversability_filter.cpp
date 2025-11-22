@@ -1,25 +1,23 @@
 #include "utility.h"
 
-class TraversabilityFilter{
+class TraversabilityFilter : public rclcpp::Node {
     
 private:
 
-    // ROS node handler
-    ros::NodeHandle nh;
     // ROS subscriber
-    ros::Subscriber subCloud;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subCloud;
     // ROS publisher
-    ros::Publisher pubCloud;
-    ros::Publisher pubCloudVisualHiRes;
-    ros::Publisher pubCloudVisualLowRes;
-    ros::Publisher pubLaserScan;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloud;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloudVisualHiRes;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubCloudVisualLowRes;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pubLaserScan;
     // Point Cloud
     pcl::PointCloud<PointType>::Ptr laserCloudIn; // projected full velodyne cloud
     pcl::PointCloud<PointType>::Ptr laserCloudOut; // filtered and downsampled point cloud
     pcl::PointCloud<PointType>::Ptr laserCloudObstacles; // cloud for saving points that are classified as obstables, convert them to laser scan
     // Transform Listener
-    tf::TransformListener listener;
-    tf::StampedTransform transform;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     // A few points
     PointType robotPoint;
     PointType localMapOrigin;
@@ -29,7 +27,7 @@ private:
     cv::Mat obstacleMatrix; // -1 - invalid, 0 - free, 1 - obstacle
     cv::Mat rangeMatrix; // -1 - invalid, >0 - valid range value
     // laser scan message
-    sensor_msgs::LaserScan laserScan;
+    sensor_msgs::msg::LaserScan laserScan;
     // for downsample
     float **minHeight;
     float **maxHeight;
@@ -38,15 +36,18 @@ private:
 
 
 public:
-    TraversabilityFilter():
-        nh("~"){
+    TraversabilityFilter() : Node("traversability_filter") {
+        
+        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        subCloud = nh.subscribe<sensor_msgs::PointCloud2>("/full_cloud_info", 5, &TraversabilityFilter::cloudHandler, this);
+        subCloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            "/full_cloud_info", 5, std::bind(&TraversabilityFilter::cloudHandler, this, std::placeholders::_1));
 
-        pubCloud = nh.advertise<sensor_msgs::PointCloud2> ("/filtered_pointcloud", 5);
-        pubCloudVisualHiRes = nh.advertise<sensor_msgs::PointCloud2> ("/filtered_pointcloud_visual_high_res", 5);
-        pubCloudVisualLowRes = nh.advertise<sensor_msgs::PointCloud2> ("/filtered_pointcloud_visual_low_res", 5);
-        pubLaserScan = nh.advertise<sensor_msgs::LaserScan> ("/pointcloud_2_laserscan", 5);  
+        pubCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud", 5);
+        pubCloudVisualHiRes = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud_visual_high_res", 5);
+        pubCloudVisualLowRes = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud_visual_low_res", 5);
+        pubLaserScan = this->create_publisher<sensor_msgs::msg::LaserScan>("/pointcloud_2_laserscan", 5);
 
         allocateMemory();
 
@@ -54,81 +55,63 @@ public:
     }
 
     void allocateMemory(){
-
         laserCloudIn.reset(new pcl::PointCloud<PointType>());
         laserCloudOut.reset(new pcl::PointCloud<PointType>());
         laserCloudObstacles.reset(new pcl::PointCloud<PointType>());
-
-        obstacleMatrix = cv::Mat(N_SCAN, Horizon_SCAN, CV_32S, cv::Scalar::all(-1));
-        rangeMatrix =  cv::Mat(N_SCAN, Horizon_SCAN, CV_32F, cv::Scalar::all(-1));
 
         laserCloudMatrix.resize(N_SCAN);
         for (int i = 0; i < N_SCAN; ++i)
             laserCloudMatrix[i].resize(Horizon_SCAN);
 
-        initFlag = new bool*[filterHeightMapArrayLength];
-        for (int i = 0; i < filterHeightMapArrayLength; ++i)
-            initFlag[i] = new bool[filterHeightMapArrayLength];
-
-        obstFlag = new bool*[filterHeightMapArrayLength];
-        for (int i = 0; i < filterHeightMapArrayLength; ++i)
-            obstFlag[i] = new bool[filterHeightMapArrayLength];
+        obstacleMatrix = cv::Mat(N_SCAN, Horizon_SCAN, CV_32SC1, cv::Scalar::all(-1));
+        rangeMatrix = cv::Mat(N_SCAN, Horizon_SCAN, CV_32FC1, cv::Scalar::all(FLT_MAX));
 
         minHeight = new float*[filterHeightMapArrayLength];
-        for (int i = 0; i < filterHeightMapArrayLength; ++i)
-            minHeight[i] = new float[filterHeightMapArrayLength];
-
         maxHeight = new float*[filterHeightMapArrayLength];
-        for (int i = 0; i < filterHeightMapArrayLength; ++i)
-            maxHeight[i] = new float[filterHeightMapArrayLength];
+        obstFlag = new bool*[filterHeightMapArrayLength];
+        initFlag = new bool*[filterHeightMapArrayLength];
 
-        resetParameters();
+        for (int i = 0; i < filterHeightMapArrayLength; ++i){
+            minHeight[i] = new float[filterHeightMapArrayLength];
+            maxHeight[i] = new float[filterHeightMapArrayLength];
+            obstFlag[i] = new bool[filterHeightMapArrayLength];
+            initFlag[i] = new bool[filterHeightMapArrayLength];
+        }
     }
 
     void resetParameters(){
-
         laserCloudIn->clear();
         laserCloudOut->clear();
         laserCloudObstacles->clear();
-
-        obstacleMatrix = cv::Mat(N_SCAN, Horizon_SCAN, CV_32S, cv::Scalar::all(-1));
-        rangeMatrix =  cv::Mat(N_SCAN, Horizon_SCAN, CV_32F, cv::Scalar::all(-1));
-
+        
+        for (int i = 0; i < N_SCAN; ++i)
+            fill(laserCloudMatrix[i].begin(), laserCloudMatrix[i].end(), PointType());
+        
         for (int i = 0; i < filterHeightMapArrayLength; ++i){
-            for (int j = 0; j < filterHeightMapArrayLength; ++j){
-                initFlag[i][j] = false;
-                obstFlag[i][j] = false;
-            }
+            fill(minHeight[i], minHeight[i] + filterHeightMapArrayLength, FLT_MAX);
+            fill(maxHeight[i], maxHeight[i] + filterHeightMapArrayLength, -FLT_MAX);
+            fill(obstFlag[i], obstFlag[i] + filterHeightMapArrayLength, false);
+            fill(initFlag[i], initFlag[i] + filterHeightMapArrayLength, false);
         }
     }
 
     ~TraversabilityFilter(){}
 
 
-    void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
-        
+    void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg){
         extractRawCloud(laserCloudMsg);
-
         if (transformCloud() == false) return;
-
         cloud2Matrix();
-
         applyFilter();
-
         extractFilteredCloud();
-
         downsampleCloud();
-
         predictCloudBGK();
-
         publishCloud();
-
         publishLaserScan();
-
         resetParameters();
     }
 
-    void extractRawCloud(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
+    void extractRawCloud(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg){
         // ROS msg -> PCL cloud
         pcl::fromROSMsg(*laserCloudMsg, *laserCloudIn);
         // extract range info
@@ -147,19 +130,26 @@ public:
 
     bool transformCloud(){
         // Listen to the TF transform and prepare for point cloud transformation
-        try{listener.lookupTransform("map","base_link", ros::Time(0), transform); }
-        catch (tf::TransformException ex){ /*ROS_ERROR("Transfrom Failure.");*/ return false; }
+        try{
+            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+            
+            robotPoint.x = transform.transform.translation.x;
+            robotPoint.y = transform.transform.translation.y;
+            robotPoint.z = transform.transform.translation.z;
 
-        robotPoint.x = transform.getOrigin().x();
-        robotPoint.y = transform.getOrigin().y();
-        robotPoint.z = transform.getOrigin().z();
+            // Transform the point cloud
+            sensor_msgs::msg::PointCloud2 cloud_in_msg, cloud_out_msg;
+            pcl::toROSMsg(*laserCloudIn, cloud_in_msg);
+            cloud_in_msg.header.frame_id = "base_link";
+            cloud_in_msg.header.stamp = this->get_clock()->now();
 
-        laserCloudIn->header.frame_id = "base_link";
-        laserCloudIn->header.stamp = 0; // don't use the latest time, we don't have that transform in the queue yet
-
-        pcl::PointCloud<PointType> laserCloudTemp;
-        pcl_ros::transformPointCloud("map", *laserCloudIn, laserCloudTemp, listener);
-        *laserCloudIn = laserCloudTemp;
+            tf2::doTransform(cloud_in_msg, cloud_out_msg, transform);
+            pcl::fromROSMsg(cloud_out_msg, *laserCloudIn);
+        }
+        catch (tf2::TransformException& ex){
+            RCLCPP_ERROR(this->get_logger(), "Transform failure: %s", ex.what());
+            return false;
+        }
 
         return true;
     }
@@ -316,12 +306,12 @@ public:
         }
 
         // Publish laserCloudOut for visualization (before downsample and BGK prediction)
-        if (pubCloudVisualHiRes.getNumSubscribers() != 0){
-            sensor_msgs::PointCloud2 laserCloudTemp;
+        if (pubCloudVisualHiRes->get_subscription_count() != 0){
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*laserCloudOut, laserCloudTemp);
-            laserCloudTemp.header.stamp = ros::Time::now();
+            laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
-            pubCloudVisualHiRes.publish(laserCloudTemp);
+            pubCloudVisualHiRes->publish(laserCloudTemp);
         }
     }
 
@@ -383,12 +373,12 @@ public:
         *laserCloudOut = *laserCloudTemp;
 
         // Publish laserCloudOut for visualization (after downsample but beforeBGK prediction)
-        if (pubCloudVisualLowRes.getNumSubscribers() != 0){
-            sensor_msgs::PointCloud2 laserCloudTemp;
+        if (pubCloudVisualLowRes->get_subscription_count() != 0){
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*laserCloudOut, laserCloudTemp);
-            laserCloudTemp.header.stamp = ros::Time::now();
+            laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
-            pubCloudVisualLowRes.publish(laserCloudTemp);
+            pubCloudVisualLowRes->publish(laserCloudTemp);
         }
     }
 
@@ -494,45 +484,54 @@ public:
     }
 
     void publishCloud(){
-        sensor_msgs::PointCloud2 laserCloudTemp;
+        sensor_msgs::msg::PointCloud2 laserCloudTemp;
         pcl::toROSMsg(*laserCloudOut, laserCloudTemp);
-        laserCloudTemp.header.stamp = ros::Time::now();
+        laserCloudTemp.header.stamp = this->get_clock()->now();
         laserCloudTemp.header.frame_id = "map";
-        pubCloud.publish(laserCloudTemp);
+        pubCloud->publish(laserCloudTemp);
     }
 
     void publishLaserScan(){
 
         updateLaserScan();
 
-        laserScan.header.stamp = ros::Time::now();
-        pubLaserScan.publish(laserScan);
+        laserScan.header.stamp = this->get_clock()->now();
+        pubLaserScan->publish(laserScan);
         // initialize laser scan for new scan
         std::fill(laserScan.ranges.begin(), laserScan.ranges.end(), laserScan.range_max + 1.0);
     }
 
     void updateLaserScan(){
 
-        try{listener.lookupTransform("base_link","map", ros::Time(0), transform);}
-        catch (tf::TransformException ex){ /*ROS_ERROR("Transfrom Failure.");*/ return; }
+        try{
+            auto transform = tf_buffer_->lookupTransform("base_link", "map", tf2::TimePointZero);
 
-        laserCloudObstacles->header.frame_id = "map";
-        laserCloudObstacles->header.stamp = 0;
-        // transform obstacle cloud back to "base_link" frame
-        pcl::PointCloud<PointType> laserCloudTemp;
-        pcl_ros::transformPointCloud("base_link", *laserCloudObstacles, laserCloudTemp, listener);
-        //convert point to scan
-        int cloudSize = laserCloudTemp.points.size();
-        for (int i = 0; i < cloudSize; ++i){
-            PointType *point = &laserCloudTemp.points[i];
-            float x = point->x;
-            float y = point->y;
-            float range = std::sqrt(x*x + y*y);
-            float angle = std::atan2(y, x);
-            int index = (angle - laserScan.angle_min) / laserScan.angle_increment;
-            if (index >= 0 && index < laserScan.ranges.size())
-                laserScan.ranges[index] = std::min(laserScan.ranges[index], range);
-        } 
+            laserCloudObstacles->header.frame_id = "map";
+            laserCloudObstacles->header.stamp = 0;
+            // transform obstacle cloud back to "base_link" frame
+            pcl::PointCloud<PointType> laserCloudTemp;
+            sensor_msgs::msg::PointCloud2 cloud_in_msg, cloud_out_msg;
+            pcl::toROSMsg(*laserCloudObstacles, cloud_in_msg);
+            tf2::doTransform(cloud_in_msg, cloud_out_msg, transform);
+            pcl::fromROSMsg(cloud_out_msg, laserCloudTemp);
+
+            //convert point to scan
+            int cloudSize = laserCloudTemp.points.size();
+            for (int i = 0; i < cloudSize; ++i){
+                PointType *point = &laserCloudTemp.points[i];
+                float x = point->x;
+                float y = point->y;
+                float range = std::sqrt(x*x + y*y);
+                float angle = std::atan2(y, x);
+                int index = (angle - laserScan.angle_min) / laserScan.angle_increment;
+                if (index >= 0 && index < laserScan.ranges.size())
+                    laserScan.ranges[index] = std::min(laserScan.ranges[index], range);
+            } 
+        }
+        catch (tf2::TransformException& ex){
+            RCLCPP_ERROR(this->get_logger(), "Transform failure: %s", ex.what());
+            return;
+        }
     }
 
     void pointcloud2laserscanInitialization(){
@@ -553,20 +552,17 @@ public:
     }
 };
 
-
-
-
-
-
 int main(int argc, char** argv){
 
-    ros::init(argc, argv, "traversability_mapping");
-    
-    TraversabilityFilter TFilter;
+    rclcpp::init(argc, argv);
 
-    ROS_INFO("\033[1;32m---->\033[0m Traversability Filter Started.");
+    auto node = std::make_shared<TraversabilityFilter>();
 
-    ros::spin();
+    RCLCPP_INFO(node->get_logger(), "Traversability Filter Started.");
+
+    rclcpp::spin(node);
+
+    rclcpp::shutdown();
 
     return 0;
 }

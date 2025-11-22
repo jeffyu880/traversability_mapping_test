@@ -1,78 +1,133 @@
-#include <pluginlib/class_list_macros.h>
+#include <pluginlib/class_list_macros.hpp>
 #include "planner/tm_planner.h"
 #include <unistd.h>
 
-//register this planner as a BaseTMPlanner plugin
-PLUGINLIB_EXPORT_CLASS(tm_planner::TMPlanner, nav_core::BaseGlobalPlanner)
+//register this planner as a Nav2 GlobalPlanner plugin
+PLUGINLIB_EXPORT_CLASS(tm_planner::TMPlanner, nav2_core::GlobalPlanner)
  
-	
 namespace tm_planner {
 
-	TMPlanner::TMPlanner (){}
+    TMPlanner::TMPlanner() : configured_(false) {}
 
-	TMPlanner::TMPlanner(const std::string name, costmap_2d::Costmap2DROS* costmap_ros){
-		initialize(name, costmap_ros);
-	}
-	///////////////////////////////////////////////////////////////////////////////////////////////////
-	// Initialize the Plugin
-	void TMPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
-		// initialize subscriptions
-		subPath = nh.subscribe("/global_path", 5, &TMPlanner::pathHandler, this);
-		pubGoal = nh.advertise<geometry_msgs::PoseStamped>("/prm_goal", 5);
-		// visualize twist command
-		subTwistCommand1 = nh.subscribe<nav_msgs::Path>("/move_base/TrajectoryPlannerROS/local_plan", 5, &TMPlanner::twistCommandHandler, this);
-		subTwistCommand2 = nh.subscribe<nav_msgs::Path>("/move_base/DWAPlannerROS/local_plan", 5, &TMPlanner::twistCommandHandler, this);
-		// Publisher
-        pubTwistCommand = nh.advertise<nav_msgs::Path>("/twist_command", 5);
-	}
+    void TMPlanner::configure(
+        const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
+        std::string name, 
+        std::shared_ptr<tf2_ros::Buffer> tf,
+        std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
+    {
+        node_ = parent;
+        auto node = node_.lock();
+        name_ = name;
+        tf_buffer_ = tf;
+        costmap_ros_ = costmap_ros;
+        global_frame_ = costmap_ros_->getGlobalFrameID();
 
-	// visualize twist command
-	void TMPlanner::twistCommandHandler(const nav_msgs::Path::ConstPtr& pathMsg){
+        // Initialize subscriptions and publishers
+        subPath = node->create_subscription<nav_msgs::msg::Path>(
+            "/global_path", 5, 
+            std::bind(&TMPlanner::pathHandler, this, std::placeholders::_1));
+        
+        pubGoal = node->create_publisher<geometry_msgs::msg::PoseStamped>("/prm_goal", 5);
+        
+        // Visualize twist command
+        subTwistCommand1 = node->create_subscription<nav_msgs::msg::Path>(
+            "/local_plan", 5, 
+            std::bind(&TMPlanner::twistCommandHandler, this, std::placeholders::_1));
+        
+        subTwistCommand2 = node->create_subscription<nav_msgs::msg::Path>(
+            "/transformed_global_plan", 5, 
+            std::bind(&TMPlanner::twistCommandHandler, this, std::placeholders::_1));
+        
+        // Publisher
+        pubTwistCommand = node->create_publisher<nav_msgs::msg::Path>("/twist_command", 5);
 
-		try{ listener.lookupTransform("map","base_link", ros::Time(0), transform); } 
-        catch (tf::TransformException ex){ return; }
+        configured_ = true;
+    }
 
-        nav_msgs::Path outTwist = *pathMsg;
+    void TMPlanner::cleanup()
+    {
+        configured_ = false;
+    }
 
-        for (int i = 0; i < outTwist.poses.size(); ++i)
-            outTwist.poses[i].pose.position.z = transform.getOrigin().z() + 1.0;
+    void TMPlanner::activate()
+    {
+        // Activation logic if needed
+    }
 
-        pubTwistCommand.publish(outTwist);
+    void TMPlanner::deactivate()
+    {
+        // Deactivation logic if needed
+    }
+
+    // visualize twist command
+    void TMPlanner::twistCommandHandler(const nav_msgs::msg::Path::SharedPtr pathMsg){
+
+        try{ 
+            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+            
+            nav_msgs::msg::Path outTwist = *pathMsg;
+
+            for (size_t i = 0; i < outTwist.poses.size(); ++i)
+                outTwist.poses[i].pose.position.z = transform.transform.translation.z + 1.0;
+
+            pubTwistCommand->publish(outTwist);
+        } 
+        catch (tf2::TransformException& ex){ 
+            return; 
+        }
     }
 
     // receive path from prm global planner
-	void TMPlanner::pathHandler(const nav_msgs::Path::ConstPtr& pathMsg){
-		// std::lock_guard<std::mutex> lock(mtx);
-		// if the planner couldn't find a feasible path, pose size should be 0
-		globalPath = *pathMsg;
-	}
+    void TMPlanner::pathHandler(const nav_msgs::msg::Path::SharedPtr pathMsg){
+        // std::lock_guard<std::mutex> lock(mtx);
+        // if the planner couldn't find a feasible path, pose size should be 0
+        globalPath = *pathMsg;
+    }
 
-	///////////////////////////////////////////////////////////////////////////////////////////////////
-	bool TMPlanner::makePlan(const geometry_msgs::PoseStamped& start, const geometry_msgs::PoseStamped& goal,  std::vector<geometry_msgs::PoseStamped>& plan){
-		
-		// 1. Publish Goal to PRM Planner
-		ROS_INFO("Goal Received at: [%lf, %lf, %lf]", goal.pose.position.x, goal.pose.position.y, goal.pose.position.z);
-		pubGoal.publish(goal);
+    nav_msgs::msg::Path TMPlanner::createPlan(
+        const geometry_msgs::msg::PoseStamped & start,
+        const geometry_msgs::msg::PoseStamped & goal)
+    {
+        nav_msgs::msg::Path plan;
+        auto node = node_.lock();
+        plan.header.stamp = node->now();
+        plan.header.frame_id = global_frame_;
 
-		// 2. if the planner couldn't find a feasible path, pose size should be 0
-		if (globalPath.poses.size() == 0){
-			pubGoal.publish(goal);
-			return false;
-		}
-		ROS_INFO("A Valid Path Received!");
+        if (!configured_) {
+            RCLCPP_ERROR(node->get_logger(), "Planner has not been configured");
+            return plan;
+        }
 
-		// 3. Extract Path
-		geometry_msgs::PoseStamped this_pos = goal;
-		for (int i = 0; i < globalPath.poses.size(); ++i){
-			this_pos = globalPath.poses[i];
-			plan.push_back(this_pos);
-		}
+        // 1. Publish Goal to PRM Planner
+        RCLCPP_INFO(node->get_logger(), "Goal Received at: [%lf, %lf, %lf]", 
+                    goal.pose.position.x, goal.pose.position.y, goal.pose.position.z);
+        pubGoal->publish(goal);
 
-		plan.back().pose.orientation = goal.pose.orientation;
+        // 2. Wait for path from PRM planner (simple approach - in practice might want callback)
+        rclcpp::sleep_for(std::chrono::milliseconds(100));
 
-		globalPath.poses.clear();
+        // 3. if the planner couldn't find a feasible path, pose size should be 0
+        if (globalPath.poses.size() == 0){
+            pubGoal->publish(goal);
+            RCLCPP_WARN(node->get_logger(), "No valid path found");
+            return plan;
+        }
 
-		return true; 
-	}
+        RCLCPP_INFO(node->get_logger(), "A Valid Path Received!");
 
-};
+        // 4. Extract Path
+        for (size_t i = 0; i < globalPath.poses.size(); ++i){
+            plan.poses.push_back(globalPath.poses[i]);
+        }
+
+        // Make sure the goal orientation is preserved
+        if (!plan.poses.empty()) {
+            plan.poses.back().pose.orientation = goal.pose.orientation;
+        }
+
+        globalPath.poses.clear();
+
+        return plan; 
+    }
+
+}

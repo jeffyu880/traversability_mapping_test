@@ -1,33 +1,32 @@
 #ifndef _UTILITY_TM_H_
 #define _UTILITY_TM_H_
 
-#include <ros/ros.h>
+#include <rclcpp/rclcpp.hpp>
 
-#include <std_msgs/Header.h>
-#include <sensor_msgs/Image.h>
-#include <sensor_msgs/LaserScan.h>
-#include <nav_msgs/Path.h>
-#include <nav_msgs/Odometry.h>
-#include <nav_msgs/OccupancyGrid.h>
-#include <geometry_msgs/PoseArray.h>
-#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <std_msgs/msg/header.hpp>
+#include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
+#include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 
-#include <interactive_markers/interactive_marker_server.h>
+#include <interactive_markers/interactive_marker_server.hpp>
 
-#include <nav_core/base_global_planner.h>
-#include <costmap_2d/costmap_2d_ros.h>
+#include <nav2_core/global_planner.hpp>
+#include <nav2_costmap_2d/costmap_2d_ros.hpp>
 
 #include <Eigen/Core>
 #include <opencv2/core/core.hpp>
 #include <opencv2/core/eigen.hpp>
+#include <opencv2/opencv.hpp>
 
-#include <opencv/cv.h>
 #include <cv_bridge/cv_bridge.h>
-#include <image_transport/image_transport.h>
+#include <image_transport/image_transport.hpp>
 
 #include <pcl/common/common.h>
 #include <pcl/point_types.h>
-#include <pcl_ros/point_cloud.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/range_image/range_image.h>
 #include <pcl/filters/filter.h>
@@ -35,10 +34,11 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/io/pcd_io.h>
 
-#include <tf/transform_listener.h>
-#include <tf/transform_broadcaster.h>
-#include <tf/transform_datatypes.h>
-#include <pcl_ros/transforms.h>
+#include <tf2/exceptions.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_sensor_msgs/tf2_sensor_msgs.hpp>
 
 #include <vector>
 #include <cmath>
@@ -55,13 +55,13 @@
 #include <thread> // c++11
 #include <mutex> // c++11
 
-#include "marker/Marker.h"
-#include "marker/MarkerArray.h"
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include "planner/kdtree.h"
-#include "planner/cubic_spline_interpolator.h"
+// #include "planner/cubic_spline_interpolator.h" // Commented out due to ROS1 compatibility issues
 
-#include "elevation_msgs/OccupancyElevation.h"
+#include "elevation_msgs/msg/occupancy_elevation.hpp"
 
 using namespace std;
 
@@ -252,7 +252,7 @@ struct childMap_t{
                 // cell position in the array of submap
                 cellArray[i][j]->grid.mapID = subInd;
                 cellArray[i][j]->grid.cubeX = indX;
-                cellArray[i][j]->grid.cubeY = indY;
+                cellArray[i][j]->grid.cubeY = indy;
                 cellArray[i][j]->grid.gridX = i;
                 cellArray[i][j]->grid.gridY = j;
                 cellArray[i][j]->grid.gridIndex = index;

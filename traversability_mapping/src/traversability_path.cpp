@@ -1,34 +1,28 @@
 #include "utility.h"
+#include "elevation_msgs/msg/occupancy_elevation.hpp"
 
-#include "elevation_msgs/OccupancyElevation.h"
-
-
-
-class TraversabilityPath{
+class TraversabilityPath : public rclcpp::Node {
 
 public:
 
-    ros::NodeHandle nh;
-
     std::mutex mtx;
 
-    ros::Subscriber subElevationMap; // 2d local height map from mapping package
-    ros::Subscriber subGoal;
+    rclcpp::Subscription<elevation_msgs::msg::OccupancyElevation>::SharedPtr subElevationMap; // 2d local height map from mapping package
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr subGoal;
 
-    elevation_msgs::OccupancyElevation elevationMap; // this is received from mapping package. it is a 2d local map that includes height info
+    elevation_msgs::msg::OccupancyElevation elevationMap; // this is received from mapping package. it is a 2d local map that includes height info
 
     float map_min[3]; // 0 - x, 1 - y, 2 - z
     float map_max[3];
 
-    
-    ros::Publisher pubPathCloud;
-    ros::Publisher pubPathLibraryValid;
-    ros::Publisher pubPathLibraryOrigin;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPathCloud;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPathLibraryValid;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubPathLibraryOrigin;
 
-    ros::Publisher pubGlobalPath; // path is published in pose array format 
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubGlobalPath; // path is published in pose array format 
 
-    tf::TransformListener listener;
-    tf::StampedTransform transform;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
     const int pathDepth = 4;
 
@@ -47,7 +41,7 @@ public:
     vector<state_t*> pathList;
 
     PointType goalPoint;
-    nav_msgs::Path globalPath;
+    nav_msgs::msg::Path globalPath;
 
     pcl::PointCloud<PointType>::Ptr pathCloudLocal;
     pcl::PointCloud<PointType>::Ptr pathCloudGlobal;
@@ -60,18 +54,23 @@ public:
     state_t *rootState;
     state_t *goalState;
 
-    TraversabilityPath():
-        nh("~"),
+    TraversabilityPath() : Node("traversability_path"),
         planningFlag(false){
 
-        pubGlobalPath = nh.advertise<nav_msgs::Path>("/global_path", 5);
+        tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-        pubPathCloud = nh.advertise<sensor_msgs::PointCloud2>("/path_trajectory", 5);
-        pubPathLibraryValid = nh.advertise<sensor_msgs::PointCloud2>("/path_library_valid", 5);
-        pubPathLibraryOrigin = nh.advertise<sensor_msgs::PointCloud2>("/path_library_origin", 5);
+        pubGlobalPath = this->create_publisher<nav_msgs::msg::Path>("/global_path", 5);
 
-        subGoal = nh.subscribe<geometry_msgs::PoseStamped>("/prm_goal", 5, &TraversabilityPath::goalPosHandler, this);
-        subElevationMap = nh.subscribe<elevation_msgs::OccupancyElevation>("/occupancy_map_local_height", 5, &TraversabilityPath::elevationMapHandler, this);  
+        pubPathCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/path_trajectory", 5);
+        pubPathLibraryValid = this->create_publisher<sensor_msgs::msg::PointCloud2>("/path_library_valid", 5);
+        pubPathLibraryOrigin = this->create_publisher<sensor_msgs::msg::PointCloud2>("/path_library_origin", 5);
+
+        subGoal = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/prm_goal", 5, std::bind(&TraversabilityPath::goalPosHandler, this, std::placeholders::_1));
+        
+        subElevationMap = this->create_subscription<elevation_msgs::msg::OccupancyElevation>(
+            "/occupancy_map_local_height", 5, std::bind(&TraversabilityPath::elevationMapHandler, this, std::placeholders::_1));
 
         pathCloud.reset(new pcl::PointCloud<PointType>());
         pathCloudLocal.reset(new pcl::PointCloud<PointType>());
@@ -87,29 +86,23 @@ public:
     }
 
     void createPathLibrary(){
-        // add root node
+        pathCloudLocal->clear();
+        stateList.clear();
+
         rootState->x[0] = 0;
         rootState->x[1] = 0;
         rootState->x[2] = 0;
         rootState->theta = 0;
-        rootState->stateId = stateList.size();
-        rootState->cost = 0;
 
-        stateList.push_back(rootState);
-        // add nodes recursively
         createPathLibrary(rootState, 0);
-        // extract nodes for visualization
+
+        pathCloudLocal->width = pathCloudLocal->points.size();
+        pathCloudLocal->height = 1;
+        pathCloudLocal->is_dense = false;
+
         stateListSize = stateList.size();
 
-        for (int i = 0; i < stateListSize; ++i){
-            PointType p;
-            p.x = stateList[i]->x[0];
-            p.y = stateList[i]->x[1];
-            p.z = stateList[i]->x[2];
-            p.intensity = stateList[i]->stateId;
-
-            pathCloudLocal->push_back(p);
-        }
+        RCLCPP_INFO(this->get_logger(), "Path library created with %d states", stateListSize);
     }
 
     void createPathLibrary(state_t* parentState, int previousDepth){
@@ -136,24 +129,28 @@ public:
 
                 newState->x[0] = previousState->x[0] + (forwardVelocity * cos(previousState->theta)) * deltaTime;
                 newState->x[1] = previousState->x[1] + (forwardVelocity * sin(previousState->theta)) * deltaTime;
-                newState->x[2] = previousState->x[2];
+                newState->x[2] = 0;
                 newState->theta = previousState->theta + vTheta * deltaTime;
-                newState->cost = parentState->cost + distance(newState->x, parentState->x);
+
                 newState->stateId = stateList.size();
-                newState->parentState = previousState;
 
-                previousState->childList.push_back(newState);
+                PointType p;
+                p.x = newState->x[0];
+                p.y = newState->x[1];
+                p.z = newState->x[2];
+                p.intensity = newState->stateId;
 
+                pathCloudLocal->push_back(p);
                 stateList.push_back(newState);
 
                 previousState = newState;
             }
 
             createPathLibrary(previousState, thisDepth);
-        }        
+        }
     }
 
-    void elevationMapHandler(const elevation_msgs::OccupancyElevation::ConstPtr& mapMsg){
+    void elevationMapHandler(const elevation_msgs::msg::OccupancyElevation::SharedPtr mapMsg){
 
         std::lock_guard<std::mutex> lock(mtx);
 
@@ -171,7 +168,7 @@ public:
         publishTrajectory();
     }
 
-    void goalPosHandler(const geometry_msgs::PoseStampedConstPtr& goal){
+    void goalPosHandler(const geometry_msgs::msg::PoseStamped::SharedPtr goal){
         
         goalPoint.x = goal->pose.position.x;
         goalPoint.y = goal->pose.position.y;
@@ -185,33 +182,18 @@ public:
         planningFlag = true;
     }
 
-    void updateCostMap(){
+    void updateCostMap()
+    {
+        if (elevationMap.elevation.size() == 0)
+            return;
 
-        map_min[0] = elevationMap.occupancy.info.origin.position.x; 
+        // Update map boundary based on occupancy grid info
+        map_min[0] = elevationMap.occupancy.info.origin.position.x;
         map_min[1] = elevationMap.occupancy.info.origin.position.y;
-        map_min[2] = elevationMap.occupancy.info.origin.position.z;
-        map_max[0] = elevationMap.occupancy.info.origin.position.x + elevationMap.occupancy.info.resolution * elevationMap.occupancy.info.width; 
-        map_max[1] = elevationMap.occupancy.info.origin.position.y + elevationMap.occupancy.info.resolution * elevationMap.occupancy.info.height; 
-        map_max[2] = elevationMap.occupancy.info.origin.position.z;
-
-        int sizeMap = elevationMap.occupancy.data.size();
-        int inflationSize = int(costmapInflationRadius / elevationMap.occupancy.info.resolution);
-        for (int i = 0; i < sizeMap; ++i) {
-            int idX = int(i % elevationMap.occupancy.info.width);
-            int idY = int(i / elevationMap.occupancy.info.width);
-            if (elevationMap.occupancy.data[i] > 0){
-                for (int m = -inflationSize; m <= inflationSize; ++m) {
-                    for (int n = -inflationSize; n <= inflationSize; ++n) {
-                        int newIdX = idX + m;
-                        int newIdY = idY + n;
-                        if (newIdX < 0 || newIdX >= elevationMap.occupancy.info.width || newIdY < 0 || newIdY >= elevationMap.occupancy.info.height)
-                            continue;
-                        int index = newIdX + newIdY * elevationMap.occupancy.info.width;
-                        elevationMap.costMap[index] = std::max(elevationMap.costMap[index], std::sqrt(float(m*m+n*n)));
-                    }
-                }
-            }
-        }
+        
+        // Calculate map maximum bounds
+        map_max[0] = elevationMap.occupancy.info.origin.position.x + elevationMap.occupancy.info.width * elevationMap.occupancy.info.resolution;
+        map_max[1] = elevationMap.occupancy.info.origin.position.y + elevationMap.occupancy.info.height * elevationMap.occupancy.info.resolution;
     }
 
     void updatePathLibrary(){
@@ -222,115 +204,115 @@ public:
         }
 
         // 2. Transform local paths to global paths
-        try{listener.lookupTransform("map","base_link", ros::Time(0), transform); } 
-        catch (tf::TransformException ex){ /*ROS_ERROR("Transfrom Failure.");*/ return; }
+        try{
+            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
 
-        pathCloudLocal->header.frame_id = "base_link";
-        pathCloudLocal->header.stamp = 0; // don't use the latest time, we don't have that transform in the queue yet
+            // Transform the point cloud
+            sensor_msgs::msg::PointCloud2 cloud_in_msg, cloud_out_msg;
+            pcl::toROSMsg(*pathCloudLocal, cloud_in_msg);
+            cloud_in_msg.header.frame_id = "base_link";
+            cloud_in_msg.header.stamp = this->get_clock()->now();
 
-        pcl_ros::transformPointCloud("map", *pathCloudLocal, *pathCloudGlobal, listener);
+            tf2::doTransform(cloud_in_msg, cloud_out_msg, transform);
+            pcl::fromROSMsg(cloud_out_msg, *pathCloudGlobal);
+
+        }
+        catch (tf2::TransformException& ex){ 
+            RCLCPP_ERROR(this->get_logger(), "Transform Failure: %s", ex.what());
+            return; 
+        }
 
         // 3. Collision check
         state_t *state = new state_t;
         for (int i = 0; i < stateListSize; ++i){
+            
+            PointType *p = &pathCloudGlobal->points[i];
+            
+            updateHeight(p);
 
-            if (stateList[i]->validFlag == false)
-                continue;
-            state->x[0] = pathCloudGlobal->points[i].x;
-            state->x[1] = pathCloudGlobal->points[i].y;
-            state->x[2] = pathCloudGlobal->points[i].z;
+            state->x[0] = p->x;
+            state->x[1] = p->y;
+            state->x[2] = p->z;
 
             if (isIncollision(state) == true){
                 markInvalidState(stateList[i]);
+                continue;
             }
         }
 
         delete state;
 
-        // 4. extract valid states
+        // 4. Save valid paths
         pathCloudValid->clear();
         for (int i = 0; i < stateListSize; ++i){
-            if (stateList[i]->validFlag == false)
-                continue;
-            // updateHeight(&pathCloudGlobal->points[i]);
-            pathCloudValid->push_back(pathCloudGlobal->points[i]);
+            if (stateList[i]->validFlag == true){
+                PointType p = pathCloudGlobal->points[i];
+                p.intensity = 0;
+                pathCloudValid->push_back(p);
+            }
         }
 
-        // 5. Visualize valid states (or paths)
-        if (pubPathLibraryValid.getNumSubscribers() != 0){
-            sensor_msgs::PointCloud2 laserCloudTemp;
+        // 5. Visualize valid library states (or paths)
+        if (pubPathLibraryValid->get_subscription_count() != 0){
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*pathCloudValid, laserCloudTemp);
-            laserCloudTemp.header.stamp = ros::Time::now();
+            laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
-            pubPathLibraryValid.publish(laserCloudTemp);
+            pubPathLibraryValid->publish(laserCloudTemp);
         }
 
         // 6. Visualize all library states (or paths)
-        if (pubPathLibraryOrigin.getNumSubscribers() != 0){
-            sensor_msgs::PointCloud2 laserCloudTemp;
+        if (pubPathLibraryOrigin->get_subscription_count() != 0){
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*pathCloudLocal, laserCloudTemp);
-            laserCloudTemp.header.stamp = ros::Time::now();
+            laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "base_link";
-            pubPathLibraryOrigin.publish(laserCloudTemp);
+            pubPathLibraryOrigin->publish(laserCloudTemp);
         }
     }
 
     void updateHeight(PointType *p){
-        if (p->x <= map_min[0] || p->x >= map_max[0] || p->y <= map_min[1] || p->y >= map_max[1])
-            return;
-        int rounded_x = (int)((p->x - map_min[0]) / mapResolution);
-        int rounded_y = (int)((p->y - map_min[1]) / mapResolution);
-        int index = rounded_x + rounded_y * elevationMap.occupancy.info.width;
-        if (index < 0 || index >= elevationMap.occupancy.info.width * elevationMap.occupancy.info.height)
-            return;
-        p->z = elevationMap.height[index] + 0.2;
+        // Get height from elevation map
+        int x = (p->x - elevationMap.occupancy.info.origin.position.x) / elevationMap.occupancy.info.resolution;
+        int y = (p->y - elevationMap.occupancy.info.origin.position.y) / elevationMap.occupancy.info.resolution;
+        
+        if (x >= 0 && x < elevationMap.occupancy.info.width && y >= 0 && y < elevationMap.occupancy.info.height) {
+            int index = x + y * elevationMap.occupancy.info.width;
+            if (index < elevationMap.elevation.size()) {
+                p->z = elevationMap.elevation[index];
+            }
+        }
     }
 
     void updateTrajectory(){
+        // Use KD-tree to find best path toward goal
+        kdTreeFromCloud->setInputCloud(pathCloudValid);
+        
+        vector<int> pointIdxSearch;
+        vector<float> pointSquaredDistance;
 
+        PointType goalPt = goalPoint;
+        
+        int numberOfPointsFound = kdTreeFromCloud->nearestKSearch(goalPt, 1, pointIdxSearch, pointSquaredDistance);
+        
         pathList.clear();
         
-        if (pathCloudValid->size() == 0)
-            return;
-
-        // Find near valid states
-        std::vector<int> pointSearchInd;
-        std::vector<float> pointSearchSqDis;
-        kdTreeFromCloud->setInputCloud(pathCloudValid);
-
-        double radius = 0.3; // search radius
-        kdTreeFromCloud->radiusSearch(goalPoint, radius, pointSearchInd, pointSearchSqDis, 0);
-
-        if (pointSearchInd.size() == 0)
-            kdTreeFromCloud->nearestKSearch(goalPoint, 5, pointSearchInd, pointSearchSqDis);
-
-        // Find the state with the minimum cost
-        float minCost = FLT_MAX;
-        state_t *minState = NULL;
-
-        for (int i = 0; i < pointSearchInd.size(); ++i){
-            int id = pathCloudValid->points[pointSearchInd[i]].intensity;
-            if (stateList[id]->cost < minCost){
-                minCost = stateList[id]->cost;
-                minState = stateList[id];
+        if (numberOfPointsFound > 0) {
+            int bestStateId = pathCloudValid->points[pointIdxSearch[0]].intensity;
+            
+            // Trace back through path library to get full trajectory
+            for (int i = 0; i < stateListSize; ++i) {
+                if (stateList[i]->stateId == bestStateId && stateList[i]->validFlag) {
+                    pathList.push_back(stateList[i]);
+                    break;
+                }
             }
         }
-
-        if (minState == NULL) // no path to the nearestGoalState is found
-            return;
-
-        // Extract path
-        state_t *thisState = minState;
-        while (thisState->parentState != NULL){
-            pathList.insert(pathList.begin(), thisState);
-            thisState = thisState->parentState;
-        }
-        pathList.insert(pathList.begin(), stateList[0]); // add current robot state
     }
 
     void publishTrajectory(){
 
-        if (pubPathCloud.getNumSubscribers() != 0){
+        if (pubPathCloud->get_subscription_count() != 0){
             pathCloud->clear();
             for (int i = 0; i < pathList.size(); ++i){
                 PointType p = pathCloudGlobal->points[pathList[i]->stateId];
@@ -338,58 +320,61 @@ public:
                 p.intensity = pathList[i]->cost;
                 pathCloud->push_back(p);
             }
-            sensor_msgs::PointCloud2 laserCloudTemp;
+            sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*pathCloud, laserCloudTemp);
-            laserCloudTemp.header.stamp = ros::Time::now();
+            laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
-            pubPathCloud.publish(laserCloudTemp);
+            pubPathCloud->publish(laserCloudTemp);
         }
 
         // even no feasible path is found, publish an empty path
         globalPath.poses.clear();
         for (int i = 0; i < pathList.size(); i++){
-            geometry_msgs::PoseStamped pose;
+            geometry_msgs::msg::PoseStamped pose;
             pose.header.frame_id = "map";
-            pose.pose.position.x = pathCloudGlobal->points[pathList[i]->stateId].x;
-            pose.pose.position.y = pathCloudGlobal->points[pathList[i]->stateId].y;
-            pose.pose.position.z = pathCloudGlobal->points[pathList[i]->stateId].z;
-            pose.pose.orientation = tf::createQuaternionMsgFromYaw(0);
+            pose.header.stamp = this->get_clock()->now();
+            pose.pose.position.x = pathList[i]->x[0];
+            pose.pose.position.y = pathList[i]->x[1];
+            pose.pose.position.z = pathList[i]->x[2];
+
+            // Set orientation
+            tf2::Quaternion q;
+            q.setRPY(0, 0, pathList[i]->theta);
+            pose.pose.orientation = tf2::toMsg(q);
+
             globalPath.poses.push_back(pose);
         }
 
-        // publish path
         globalPath.header.frame_id = "map";
-        globalPath.header.stamp = ros::Time::now();
-        pubGlobalPath.publish(globalPath);
-
-        planningFlag = false;
+        globalPath.header.stamp = this->get_clock()->now();
+        pubGlobalPath->publish(globalPath);
     }
-
 
     void markInvalidState(state_t* state){
         state->validFlag = false;
-        int childListSize = state->childList.size();
-        for (int i = 0; i < childListSize; ++i){
-            markInvalidState(state->childList[i]);
+        
+        // Mark all child states as invalid too
+        for (auto child : state->childList) {
+            if (child->validFlag) {
+                markInvalidState(child);
+            }
         }
     }
 
     // Collision check (using state for input)
     bool isIncollision(state_t* stateIn){
-        // if the state is outside the map, discard this state
-        if (stateIn->x[0] <= map_min[0] || stateIn->x[0] >= map_max[0] 
-            || stateIn->x[1] <= map_min[1] || stateIn->x[1] >= map_max[1])
-            return false;
-        // if the distance to the nearest obstacle is less than xxx, in collision
-        int rounded_x = (int)((stateIn->x[0] - map_min[0]) / mapResolution);
-        int rounded_y = (int)((stateIn->x[1] - map_min[1]) / mapResolution);
-        int index = rounded_x + rounded_y * elevationMap.occupancy.info.width;
-
-        // close to obstacles within ... m
-        if (elevationMap.costMap[index] > 0)
-            return true;
+        // Check collision using elevation map
+        int x = (stateIn->x[0] - elevationMap.occupancy.info.origin.position.x) / elevationMap.occupancy.info.resolution;
+        int y = (stateIn->x[1] - elevationMap.occupancy.info.origin.position.y) / elevationMap.occupancy.info.resolution;
         
-        return false;
+        if (x >= 0 && x < elevationMap.occupancy.info.width && y >= 0 && y < elevationMap.occupancy.info.height) {
+            int index = x + y * elevationMap.occupancy.info.width;
+            if (index < elevationMap.occupancy.data.size()) {
+                return elevationMap.occupancy.data[index] > 50; // occupied if > 50%
+            }
+        }
+        
+        return true; // collision if out of bounds
     }
 
     float distance(double state_from[3], double state_to[3]){
@@ -399,24 +384,25 @@ public:
     }
 
     void publishPath(){
-        sensor_msgs::PointCloud2 laserCloudTemp;
+        sensor_msgs::msg::PointCloud2 laserCloudTemp;
         pcl::toROSMsg(*pathCloudValid, laserCloudTemp);
-        laserCloudTemp.header.stamp = ros::Time::now();
+        laserCloudTemp.header.stamp = this->get_clock()->now();
         laserCloudTemp.header.frame_id = "base_link";
-        pubPathLibraryValid.publish(laserCloudTemp);
+        pubPathLibraryValid->publish(laserCloudTemp);
     }
 };
 
-
 int main(int argc, char** argv){
 
-    ros::init(argc, argv, "traversability_mapping");
+    rclcpp::init(argc, argv);
     
-    TraversabilityPath tPath;
+    auto node = std::make_shared<TraversabilityPath>();
 
-    ROS_INFO("\033[1;32m---->\033[0m Traversability Planner Started.");
+    RCLCPP_INFO(node->get_logger(), "Traversability Planner Started.");
 
-    ros::spin();
+    rclcpp::spin(node);
+
+    rclcpp::shutdown();
 
     return 0;
 }
