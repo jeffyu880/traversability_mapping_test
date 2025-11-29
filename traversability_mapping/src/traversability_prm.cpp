@@ -1,6 +1,8 @@
 #include "utility.h"
 #include "elevation_msgs/msg/occupancy_elevation.hpp"
 
+// The file implements a probabilistic roadmap path planner
+
 class TraversabilityPRM : public rclcpp::Node {
 private:
 

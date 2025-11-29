@@ -17,20 +17,22 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='velodyne_base_link',
-            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'velodyne']
+            arguments=['-0.18209', '0.1575', '0.65', '0', '0', '4.7124', 'base_link', 'velodyne']
         ),
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            name='camera_init_to_map',
-            arguments=['0', '0', '0', '1.570795', '0', '1.570795', 'map', 'camera_init']
+            name='map_odom',
+            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+            parameters=[{'use_sim_time': True}]
         ),
         Node(
-            package='tf2_ros',
+            package='tf2_ros', 
             executable='static_transform_publisher',
-            name='base_link_to_camera',
-            arguments=['0', '0', '0', '-1.570795', '-1.570795', '0', 'camera', 'base_link']
-        )
+            name='odom_base_link',
+            arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
+            parameters=[{'use_sim_time': True}]
+        ),
     ]
     
     # Traversability mapping nodes
@@ -42,27 +44,27 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': True}]
         ),
-        Node(
-            package='traversability_mapping',
-            executable='traversability_map',
-            name='traversability_map',
-            output='screen',
-            parameters=[{'use_sim_time': True}]
-        ),
-        Node(
-            package='traversability_mapping',
-            executable='traversability_prm',
-            name='traversability_prm',
-            output='screen',
-            parameters=[{'use_sim_time': True}]
-        ),
-        Node(
-            package='traversability_mapping',
-            executable='traversability_path',
-            name='traversability_path',
-            output='screen',
-            parameters=[{'use_sim_time': True}]
-        )
+        # Node(
+        #     package='traversability_mapping',
+        #     executable='traversability_map',
+        #     name='traversability_map',
+        #     output='screen',
+        #     parameters=[{'use_sim_time': True}]
+        # ),
+        # Node(
+        #     package='traversability_mapping',
+        #     executable='traversability_prm',
+        #     name='traversability_prm',
+        #     output='screen',
+        #     parameters=[{'use_sim_time': True}]
+        # ),
+        # Node(
+        #     package='traversability_mapping',
+        #     executable='traversability_path',
+        #     name='traversability_path',
+        #     output='screen',
+        #     parameters=[{'use_sim_time': True}]
+        # )
     ]
     
     # RViz node (optional - you may need to adjust the config file path)
@@ -70,10 +72,7 @@ def generate_launch_description():
         package='rviz2',
         executable='rviz2',
         name='rviz2',
-        arguments=['-d', PathJoinSubstitution([
-            FindPackageShare('traversability_mapping'),
-            'launch', 'include', 'traversability_mapping.rviz'
-        ])],
+        output='screen',
         parameters=[{'use_sim_time': True}]
     )
 

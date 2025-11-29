@@ -1,6 +1,8 @@
 #include "utility.h"
 #include "elevation_msgs/msg/occupancy_elevation.hpp"
 
+// This file implements a local path pallner that geneartes motion commands and selects safe trajectories for robot navigation
+
 class TraversabilityPath : public rclcpp::Node {
 
 public:
