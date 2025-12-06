@@ -17,7 +17,7 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='velodyne_base_link',
-            arguments=['-0.18209', '0.1575', '0.65', '0', '0', '4.7124', 'base_link', 'velodyne']
+            arguments=['-0.18209', '0.1575', '0.65', '0', '0', '0', 'base_link', 'velodyne']
         ),
         Node(
             package='tf2_ros',

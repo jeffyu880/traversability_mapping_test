@@ -1,4 +1,5 @@
 #include "utility.h"
+#include <cmath>
 
 class TraversabilityFilter : public rclcpp::Node {
     
@@ -33,6 +34,8 @@ private:
     float **maxHeight;
     bool **obstFlag;
     bool **initFlag;
+    int cloudWidth = 0;
+    int cloudHeight = 0;
 
 
 public:
@@ -102,71 +105,55 @@ public:
         RCLCPP_INFO(this->get_logger(), "=== Starting cloudHandler ===");
         RCLCPP_INFO(this->get_logger(), "Received point cloud with %d points", 
                     laserCloudMsg->width * laserCloudMsg->height);
-        
-        extractRawCloud(laserCloudMsg);
-        RCLCPP_INFO(this->get_logger(), "✓ Raw cloud extracted");
 
+        cloudWidth = laserCloudMsg->width;
+        cloudHeight = laserCloudMsg->height;
+
+        // Step 1: Convert ROS message to PCL and extract basic range info
+        extractRawCloud(laserCloudMsg);         
+        RCLCPP_INFO(this->get_logger(), "✓ Raw cloud extracted");
+        
+        // Step 2: Transform point cloud from sensor frame to map frame
         if (transformCloud() == false) {
             RCLCPP_ERROR(this->get_logger(), "✗ Transform failed, skipping frame");
             return;
         }
         RCLCPP_INFO(this->get_logger(), "✓ Cloud transformed");
         
+        // Step 3: Organize points into scan line matrix format
         cloud2Matrix();
         RCLCPP_INFO(this->get_logger(), "✓ Cloud converted to matrix");
         
+        // Step 4: Apply obstacle detection filters (curbs, slopes, distance)
         applyFilter(); // DO THE MINIMAL POINT DISTANCE FILTER HERE!!!!
         RCLCPP_INFO(this->get_logger(), "✓ Filters applied");
         
+        // Step 5: Extract filtered points with obstacle labels
         extractFilteredCloud();
         RCLCPP_INFO(this->get_logger(), "✓ Filtered cloud extracted");
         
+        // Step 6: Convert to regular grid and downsample
         downsampleCloud();
         RCLCPP_INFO(this->get_logger(), "✓ Cloud downsampled");
         
+        // Step 7: Use Gaussian Process to predict missing areas
         predictCloudBGK();
         RCLCPP_INFO(this->get_logger(), "✓ BGK prediction completed");
         
+        // Step 8: Publish final point cloud
         publishCloud();
         RCLCPP_INFO(this->get_logger(), "✓ Cloud published");
         
+        // Step 9: Convert obstacles to 2D laser scan for navigation
         publishLaserScan();
         RCLCPP_INFO(this->get_logger(), "✓ Laser scan published");
         
+        // Step 10: Clean up for next iteration
         resetParameters();
         RCLCPP_INFO(this->get_logger(), "=== cloudHandler completed ===\n");
     }
 
-     // filter out points too close to the emitter (the antenna, other things on the rover)
-     void minDistFilter()
-     {
-         // Extract range info with filtering
-         for (int i = 0; i < N_SCAN; ++i){
-             for (int j = 0; j < Horizon_SCAN; ++j){
-                 int index = j + i * Horizon_SCAN;
-                 
-                 // Safety check for point cloud size
-                 if (index >= laserCloudIn->points.size()) {
-                     continue; // Leave as invalid (-1)
-                 }
-                 
-                 PointType& point = laserCloudIn->points[index];
-                 
-                 // Calculate actual 3D range from sensor origin
-                 float range = std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
-                 
-                 // FILTER POINTS TOO CLOSE (robot structure) OR TOO FAR (inaccurate)
-                 if (range < sensorMinRangeLimit) {
-                     continue; // Leave as invalid (-1)
-                 }
-                 
-                //  // Save valid range info
-                //  rangeMatrix.at<float>(i, j) = range;
-                //  // Initialize as free space (filters will update if obstacle)
-                //  obstacleMatrix.at<int>(i, j) = 0;
-             }
-         }
-     }
+
 
     // void extractRawCloud(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg){
     //     // remove points that are too close to the sensor
@@ -191,20 +178,15 @@ public:
         RCLCPP_INFO(this->get_logger(), "=== Starting extractRawCloud ===");
         
         // Check point cloud organization
-        RCLCPP_INFO(this->get_logger(), "Point cloud info:");
-        RCLCPP_INFO(this->get_logger(), "  Width: %d, Height: %d", laserCloudMsg->width, laserCloudMsg->height);
-        RCLCPP_INFO(this->get_logger(), "  Total points: %d", laserCloudMsg->width * laserCloudMsg->height);
-        RCLCPP_INFO(this->get_logger(), "  Is organized: %s", (laserCloudMsg->height > 1) ? "YES" : "NO");
-        RCLCPP_INFO(this->get_logger(), "  Frame ID: %s", laserCloudMsg->header.frame_id.c_str());
+        // RCLCPP_INFO(this->get_logger(), "Point cloud info:");
+        // RCLCPP_INFO(this->get_logger(), "  Width: %d, Height: %d", laserCloudMsg->width, laserCloudMsg->height);
+        // RCLCPP_INFO(this->get_logger(), "  Total points: %d", laserCloudMsg->width * laserCloudMsg->height);
+        // RCLCPP_INFO(this->get_logger(), "  Is organized: %s", (laserCloudMsg->height > 1) ? "YES" : "NO");
+        // RCLCPP_INFO(this->get_logger(), "  Frame ID: %s", laserCloudMsg->header.frame_id.c_str());
         
-        // Fix the order - PCL conversion FIRST, then minDistFilter
         RCLCPP_INFO(this->get_logger(), "Converting ROS message to PCL...");
         pcl::fromROSMsg(*laserCloudMsg, *laserCloudIn);
         RCLCPP_INFO(this->get_logger(), "PCL cloud size: %zu", laserCloudIn->points.size());
-        
-        // NOW call minDistFilter (after PCL conversion)
-        RCLCPP_INFO(this->get_logger(), "Calling minDistFilter...");
-        RCLCPP_INFO(this->get_logger(), "✓ minDistFilter completed");
         
         // Initialize matrices
         RCLCPP_INFO(this->get_logger(), "Initializing matrices...");
@@ -216,9 +198,9 @@ public:
         int out_of_bounds = 0;
 
         // DEBUG
-        int non_zero_intensity = 0;
-        int zero_intensity = 0;
-        
+        int num_printed = 0;
+        int num_too_close = 0;
+
         // Extract range info
         RCLCPP_INFO(this->get_logger(), "Starting range extraction loop...");
         for (int i = 0; i < N_SCAN; ++i){
@@ -230,37 +212,29 @@ public:
                     out_of_bounds++;
                     continue;
                 }
-                
-                // skip NaN point (when the point does not reflect back)
-                if (std::isnan(laserCloudIn->points[index].intensity)) {
-                    nan_points++;
-                    continue;
-                }                    
+                                   
+                // Perform the actual filtering
+                // find the squared distance from the origin.
+                float pointDepth2 = sqrt((laserCloudIn->points[index].x * laserCloudIn->points[index].x) +
+                                        (laserCloudIn->points[index].y * laserCloudIn->points[index].y) + 
+                                        (laserCloudIn->points[index].z * laserCloudIn->points[index].z));
 
-                // range check to not save points? 
-
-                // save range info (verify this element)
-                rangeMatrix.at<float>(i, j) = laserCloudIn->points[index].intensity;
-                if (rangeMatrix.at<float>(i, j) == 0.0)
-                {
-                    zero_intensity++;
-                }
-                else 
-                {
-                    non_zero_intensity++;
-                }
-                // reset obstacle status to 0 - free 
+                // // remove point if it's within the threshold range
+                // if (pointDepth2 < sensorMinRangeLimit)
+                // {
+                //     num_too_close++;
+                //     continue;
+                // }
+                // otherwise, store it into the range matrix and reset obstacle status
+                rangeMatrix.at<float>(i, j) = pointDepth2;
                 obstacleMatrix.at<int>(i, j) = 0;
                 valid_points++;
             }
         }
-        
-        RCLCPP_INFO(this->get_logger(), "Zero intensity points: %d", zero_intensity);
-        RCLCPP_INFO(this->get_logger(), "Non zero intensity points: %d", non_zero_intensity);
+        RCLCPP_INFO(this->get_logger(), "Out of bounds %d", out_of_bounds);
         RCLCPP_INFO(this->get_logger(), "=== extractRawCloud Results ===");
         RCLCPP_INFO(this->get_logger(), "Valid points processed: %d", valid_points);
-        RCLCPP_INFO(this->get_logger(), "NaN points skipped: %d", nan_points);
-        RCLCPP_INFO(this->get_logger(), "Out of bounds: %d", out_of_bounds);
+        RCLCPP_INFO(this->get_logger(), "Points that are too close: %d", num_too_close);
         RCLCPP_INFO(this->get_logger(), "Expected total: %d (N_SCAN=%d x Horizon_SCAN=%d)", 
                     N_SCAN * Horizon_SCAN, N_SCAN, Horizon_SCAN);
 
@@ -268,28 +242,36 @@ public:
     }
 
     bool transformCloud(){
-        // Listen to the TF transform and prepare for point cloud transformation
         try{
-            auto transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+            // Get the actual frame_id from the incoming message
+            std::string source_frame = "velodyne";  // or use laserCloudMsg->header.frame_id
             
-            robotPoint.x = transform.transform.translation.x;
-            robotPoint.y = transform.transform.translation.y;
-            robotPoint.z = transform.transform.translation.z;
-
-            // Transform the point cloud
+            // Look up transform from sensor frame to map
+            auto transform = tf_buffer_->lookupTransform("map", source_frame, tf2::TimePointZero);
+            
+            // Update robot position (you'll need base_link to map for this)
+            auto robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+            robotPoint.x = robot_transform.transform.translation.x;
+            robotPoint.y = robot_transform.transform.translation.y;
+            robotPoint.z = robot_transform.transform.translation.z;
+    
+            // Transform point cloud from sensor frame to map frame
             sensor_msgs::msg::PointCloud2 cloud_in_msg, cloud_out_msg;
             pcl::toROSMsg(*laserCloudIn, cloud_in_msg);
-            cloud_in_msg.header.frame_id = "base_link";
+            cloud_in_msg.header.frame_id = source_frame;  // Use actual sensor frame
             cloud_in_msg.header.stamp = this->get_clock()->now();
-
+    
+            // Apply transformation
             tf2::doTransform(cloud_in_msg, cloud_out_msg, transform);
             pcl::fromROSMsg(cloud_out_msg, *laserCloudIn);
+            
+            RCLCPP_INFO(this->get_logger(), "Transformed from %s to map frame", source_frame.c_str());
         }
         catch (tf2::TransformException& ex){
             RCLCPP_ERROR(this->get_logger(), "Transform failure: %s", ex.what());
             return false;
         }
-
+    
         return true;
     }
 
@@ -304,17 +286,50 @@ public:
         }
     }
 
+         // filter out points too close to the emitter (the antenna, other things on the rover)
+    // void minDistFilter()
+    //     {
+    //         // Extract range info with filtering
+    //         for (int i = 0; i < N_SCAN; ++i){
+    //             for (int j = 0; j < Horizon_SCAN; ++j){
+    //                 int index = j + i * Horizon_SCAN;
+                
+
+    //                 // Safety check for point cloud size
+    //                 if (index >= laserCloudIn->points.size()) {
+    //                     continue; // Leave as invalid (-1)
+    //                 }
+                    
+    //                 PointType& point = laserCloudIn->points[index];
+                    
+    //                 // Calculate actual 3D range from sensor origin
+    //                 float range = std::sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+                    
+    //                 // FILTER POINTS TOO CLOSE (robot structure) OR TOO FAR (inaccurate)
+    //                 if (range < sensorMinRangeLimit) {
+    //                     continue; // Leave as invalid (-1)
+    //                 }
+                    
+    //             //  // Save valid range info
+    //             //  rangeMatrix.at<float>(i, j) = range;
+    //             //  // Initialize as free space (filters will update if obstacle)
+    //             //  obstacleMatrix.at<int>(i, j) = 0;
+    //             }
+    //         }
+    //     }
+
     void applyFilter(){
 
         if (urbanMapping == true){
             positiveCurbFilter();
             negativeCurbFilter();
         }
-
-        slopeFilter();
+        
+        // minDistFilter();
+        // slopeFilter();
     }
 
-   
+    
 
     // Detects upward obstacles, things that the robot needs to climb over 
     void positiveCurbFilter(){
@@ -419,11 +434,11 @@ public:
                 float diffY = laserCloudMatrix[i+1][j].y - laserCloudMatrix[i][j].y;
                 float diffZ = laserCloudMatrix[i+1][j].z - laserCloudMatrix[i][j].z;
                 float angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY)) * 180 / M_PI;
-                // Slope angle is larger than threashold, mark as obstacle point
-                if (angle < -filterAngleLimit || angle > filterAngleLimit){
-                    obstacleMatrix.at<int>(i, j) = 1;
-                    continue;
-                }
+                // Slope angle is larger than threashold, mark as obstacle point TODO: This may not be good cause slope is lower at higher elevations
+                // if (angle < -filterAngleLimit || angle > filterAngleLimit){
+                //     obstacleMatrix.at<int>(i, j) = 1;
+                //     continue;
+                
             }
         }
     }
@@ -434,17 +449,12 @@ public:
         for (int i = 0; i < scanNumMax; ++i){
             for (int j = 0; j < Horizon_SCAN; ++j){
                 // invalid points and points too far are skipped
-                if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit ||
-                    rangeMatrix.at<float>(i, j) == -1)
-                    continue;
+                // if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit ||
+                //     rangeMatrix.at<float>(i, j) == -1)
+                //     continue;
                 // update point intensity (occupancy) into
                 PointType p = laserCloudMatrix[i][j];
-                p.intensity = obstacleMatrix.at<int>(i,j) == 1 ? 100 : 0;
-                // save updated points
                 laserCloudOut->push_back(p);
-                // extract obstacle points and convert them to laser scan
-                if (p.intensity == 100)
-                    laserCloudObstacles->push_back(p);
             }
         }
 
