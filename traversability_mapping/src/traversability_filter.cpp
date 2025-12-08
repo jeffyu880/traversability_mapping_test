@@ -124,9 +124,9 @@ public:
         cloud2Matrix();
         RCLCPP_INFO(this->get_logger(), "✓ Cloud converted to matrix");
         
-        // Step 4: Apply obstacle detection filters (curbs, slopes, distance)
-        applyFilter(); // DO THE MINIMAL POINT DISTANCE FILTER HERE!!!!
-        RCLCPP_INFO(this->get_logger(), "✓ Filters applied");
+        // // Step 4: Apply obstacle detection filters (curbs, slopes, distance)
+        // applyFilter(); // DO THE MINIMAL POINT DISTANCE FILTER HERE!!!!
+        // RCLCPP_INFO(this->get_logger(), "✓ Filters applied");
         
         // Step 5: Extract filtered points with obstacle labels
         extractFilteredCloud();
@@ -219,12 +219,12 @@ public:
                                         (laserCloudIn->points[index].y * laserCloudIn->points[index].y) + 
                                         (laserCloudIn->points[index].z * laserCloudIn->points[index].z));
 
-                // // remove point if it's within the threshold range
-                // if (pointDepth2 < sensorMinRangeLimit)
-                // {
-                //     num_too_close++;
-                //     continue;
-                // }
+                // remove point if it's within the threshold range
+                if (pointDepth2 < sensorMinRangeLimit)
+                {
+                    num_too_close++;
+                    continue;
+                }
                 // otherwise, store it into the range matrix and reset obstacle status
                 rangeMatrix.at<float>(i, j) = pointDepth2;
                 obstacleMatrix.at<int>(i, j) = 0;
@@ -443,25 +443,28 @@ public:
         }
     }
 
-    
-
     void extractFilteredCloud(){
-        for (int i = 0; i < scanNumMax; ++i){
+        for (int i = 0; i < N_SCAN; ++i){
             for (int j = 0; j < Horizon_SCAN; ++j){
                 // invalid points and points too far are skipped
-                // if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit ||
-                //     rangeMatrix.at<float>(i, j) == -1)
-                //     continue;
+                if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit ||
+                    rangeMatrix.at<float>(i, j) == -1)
+                    continue;
                 // update point intensity (occupancy) into
                 PointType p = laserCloudMatrix[i][j];
                 laserCloudOut->push_back(p);
             }
         }
+        RCLCPP_INFO(this->get_logger(), "laserCloudOut contains %zu points", laserCloudOut->size());
 
         // Publish laserCloudOut for visualization (before downsample and BGK prediction)
         if (pubCloudVisualHiRes->get_subscription_count() != 0){
             sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*laserCloudOut, laserCloudTemp);
+            // ADD THIS DEBUG PRINT:
+            RCLCPP_INFO(this->get_logger(), "laserCloudTemp contains %d points", 
+            laserCloudTemp.width * laserCloudTemp.height);
+
             laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
             pubCloudVisualHiRes->publish(laserCloudTemp);
