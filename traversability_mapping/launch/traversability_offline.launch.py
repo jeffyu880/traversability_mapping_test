@@ -44,13 +44,13 @@ def generate_launch_description():
             output='screen',
             parameters=[{'use_sim_time': True}]
         ),
-        # Node(
-        #     package='traversability_mapping',
-        #     executable='traversability_map',
-        #     name='traversability_map',
-        #     output='screen',
-        #     parameters=[{'use_sim_time': True}]
-        # ),
+        Node(
+            package='traversability_mapping',
+            executable='traversability_map',
+            name='traversability_map',
+            output='screen',
+            parameters=[{'use_sim_time': True}]
+        ),
         # Node(
         #     package='traversability_mapping',
         #     executable='traversability_prm',
