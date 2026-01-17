@@ -125,7 +125,7 @@ public:
         // RCLCPP_INFO(this->get_logger(), "✓ Cloud converted to matrix");
         
         // // Step 4: Apply obstacle detection filters (curbs, slopes, distance)
-        // applyFilter(); // DO THE MINIMAL POINT DISTANCE FILTER HERE!!!!
+        // applyFilter(); // Not used since we are using a gradient, so no obstacles defined here?
         // RCLCPP_INFO(this->get_logger(), "✓ Filters applied");
         
         // Step 5: Extract filtered points with obstacle labels

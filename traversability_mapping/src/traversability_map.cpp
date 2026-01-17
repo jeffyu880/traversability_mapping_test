@@ -102,7 +102,7 @@ public:
     void updateElevationMap(){
         int cloudSize = laserCloud->points.size();
         for (int i = 0; i < cloudSize; ++i){
-            laserCloud->points[i].z -= 0.2; // for visualization
+            // laserCloud->points[i].z -= 0.2; // TODO: CHANGEME, commented for visualization
             updateElevationMap(&laserCloud->points[i]);
         }
     }
@@ -136,14 +136,15 @@ public:
     }
 
     void updateOccupancyCell(mapCell_t *cell, PointType *point){
-        if (point->intensity == 100) // obstacle
-            updateOccupancyBel(cell, true);
-        else if (point->intensity == 0) // free
-            updateOccupancyBel(cell, false);
+        // if (point->intensity == 100) // obstacle
+        //     RCLCPP_ERROR(this->get_logger(), "OBSTACLE");
+        //     // updateOccupancyBel(cell, true);      #### THIS IS BECAUSE I DON't USE INTENSITY
+        // else if (point->intensity == 0) // free
+        // updateOccupancyBel(cell, false);
         
         cell->observeTimes++;
         
-        updateElevationBGK(cell, point);
+        updateElevationBGK(cell, point);    // fuses elevation from all points within a cell
         
         observingList1.push_back(cell);
     }
@@ -216,7 +217,96 @@ public:
         observingList2.clear();
     }
 
-    void calculateTraversability(mapCell_t *cell){
+    // MODIFY THIS FUNCTION!!!!
+    
+    // void calculateTraversability(mapCell_t *cell){
+    //     // BGK-based traversability analysis
+    //     vector<PointType> neighborPoints;
+    //     getNeighborCells(cell, neighborPoints);     // get the neighboring cells around the current cell
+
+    //     if (neighborPoints.size() < 3)
+    //         return;
+
+    //     cv::Mat points(neighborPoints.size(), 3, CV_32FC1);     // create a matrix with size (N x 3) -> (# of neighbors, [x,y,z])
+    //     for (int i = 0; i < neighborPoints.size(); ++i) {
+    //         points.at<float>(i, 0) = neighborPoints[i].x;
+    //         points.at<float>(i, 1) = neighborPoints[i].y;
+    //         points.at<float>(i, 2) = neighborPoints[i].z;
+    //     }
+
+    //     cv::Mat mean;
+    //     cv::calcCovarMatrix(points, matCov, mean, CV_COVAR_NORMAL | CV_COVAR_ROWS);     // calculates covariance matrix showing how x,y,z vary together 
+    //     matCov = matCov / (points.rows - 1);
+
+    //     cv::eigen(matCov, matEig, matVec);
+
+    //     // Check eigenvalue ratios for surface analysis
+    //     float ev1 = matEig.at<float>(0, 0); // along the x axis 
+    //     float ev2 = matEig.at<float>(1, 0); // along the y axis
+    //     float ev3 = matEig.at<float>(2, 0); // along the z axis
+
+    //     RCLCPP_ERROR(this->get_logger(), "ev1: %f, ev2: %f, ev3: %f", ev1, ev2, ev3);
+        
+    //     // ===== ADD THIS BLOCK TO PRINT matVec =====
+    //     RCLCPP_INFO(this->get_logger(), "=== Eigenvectors (matVec) ===");
+    //     RCLCPP_INFO(this->get_logger(), "Row 0 (ev1 direction): [%.4f, %.4f, %.4f]", 
+    //         matVec.at<float>(0, 0), matVec.at<float>(0, 1), matVec.at<float>(0, 2));
+    //     RCLCPP_INFO(this->get_logger(), "Row 1 (ev2 direction): [%.4f, %.4f, %.4f]", 
+    //         matVec.at<float>(1, 0), matVec.at<float>(1, 1), matVec.at<float>(1, 2));
+    //     RCLCPP_INFO(this->get_logger(), "Row 2 (ev3 = normal):  [%.4f, %.4f, %.4f]", 
+    //         matVec.at<float>(2, 0), matVec.at<float>(2, 1), matVec.at<float>(2, 2));
+    
+
+    //     // Default to unknown/obstacle if surface is too rough # NEED TO TUNE THIS
+    //     // if (ev1 <= 0.001 || (ev2/ev1) >= 0.1 || (ev3/ev1) >= 0.1) {     // scenario 1: the points are too close together, scenario 2: the 
+    //     //     // Non-planar or rough surface - mark as high occupancy
+    //     //     cell->updateOccupancy(1.0);
+    //     //     return;
+    //     // }
+        
+    //     // Scenario 1: if the spread of the points on the x,y plane are scattered, then the surface is very rough
+    //     // Scenario 2: if there is a large height variance      (height varies more than 10% in the area)
+    //     if ((ev2/ev1) >= 0.1 || (ev3/ev1) >= 0.1)       
+    //     {                               
+    //         RCLCPP_ERROR(this->get_logger(), "Obstacle", ev1, ev2, ev3);
+    //         cell->updateOccupancy(1.0);
+    //         return;
+    //     }
+
+    //     // Planar surface detected - calculate slope
+    //     cv::Mat normal = matVec.row(2);
+    //     float slope = acos(abs(normal.at<float>(0, 2))) * 180.0 / M_PI;
+    //     if (std::isnan(slope))
+    //     {
+    //         // RCLCPP_ERROR(this->get_logger(), "Slope: %f", slope);
+    //         // return;
+    //     }   
+
+        
+    //     // GRADIENT CALCULATION: Map slope to occupancy [0, 1]
+    //     // 0° slope → occupancy = 0.0 (completely traversable)
+    //     // 30° slope → occupancy = 1.0 (completely non-traversable)
+        
+    //     float minSlope = 0.0;   // degrees - fully traversable
+    //     float maxSlope = 40.0;  // degrees - fully non-traversable
+        
+    //     float occupancy;
+    //     if (slope <= minSlope) {
+    //         occupancy = 0.0;  // Flat = completely free
+    //     } else if (slope >= maxSlope) {
+    //         occupancy = 1.0;  // Too steep = completely blocked
+    //     } else {
+    //         // Linear gradient between min and max
+    //         occupancy = (slope - minSlope) / (maxSlope - minSlope);
+    //         RCLCPP_ERROR(this->get_logger(), "Occupancy: %f", occupancy);
+    //     }
+        
+    //     // Update cell with gradient occupancy
+    //     cell->updateOccupancy(1.0);
+    // }
+
+    void calculateTraversability(mapCell_t *cell)
+    {
         // BGK-based traversability analysis
         vector<PointType> neighborPoints;
         getNeighborCells(cell, neighborPoints);
@@ -224,38 +314,91 @@ public:
         if (neighborPoints.size() < 3)
             return;
 
-        cv::Mat points(neighborPoints.size(), 3, CV_32FC1);
-        for (int i = 0; i < neighborPoints.size(); ++i) {
-            points.at<float>(i, 0) = neighborPoints[i].x;
-            points.at<float>(i, 1) = neighborPoints[i].y;
-            points.at<float>(i, 2) = neighborPoints[i].z;
+        // ===== NEW: Convert to Eigen format =====
+        // Build vector of XYZ coordinates
+        std::vector<float> xyzVector;
+        xyzVector.reserve(neighborPoints.size() * 3);
+        
+        for (const auto& p : neighborPoints) {
+            xyzVector.push_back(p.x);
+            xyzVector.push_back(p.y);
+            xyzVector.push_back(p.z);
         }
 
-        cv::Mat mean;
-        cv::calcCovarMatrix(points, matCov, mean, CV_COVAR_NORMAL | CV_COVAR_ROWS);
-        matCov = matCov / (points.rows - 1);
+        // Map to Eigen matrix (N × 3)
+        Eigen::MatrixXf matPoints = Eigen::Map<const Eigen::Matrix<float, -1, -1, Eigen::RowMajor>>(
+            xyzVector.data(), xyzVector.size() / 3, 3);
+        
+        // ===== Height Pre-Check =====
+        float minElevation = matPoints.col(2).minCoeff();
+        float maxElevation = matPoints.col(2).maxCoeff();
+        float maxDifference = maxElevation - minElevation;
 
-        cv::eigen(matCov, matEig, matVec);
-
-        // Check eigenvalue ratios for surface analysis
-        float ev1 = matEig.at<float>(0, 0);
-        float ev2 = matEig.at<float>(1, 0);
-        float ev3 = matEig.at<float>(2, 0);
-
-        if (ev1 > 0.001 && (ev2/ev1) < 0.1 && (ev3/ev1) < 0.1) {
-            // Planar surface
-            cv::Mat normal = matVec.row(2);
-            float slope = acos(abs(normal.at<float>(0, 2))) * 180.0 / M_PI;
-            
-            if (slope > 30.0) { // steep slope
-                cell->updateOccupancy(1.0); // mark as obstacle
-            }
+        if (maxDifference > filterHeightLimit) {  // filterHeightLimit = 0.5m
+            RCLCPP_ERROR(this->get_logger(), "Large height difference: %.2f m", maxDifference);
+            cell->updateOccupancy(1.0);
+            return;
         }
+
+        // ===== Calculate Slope =====
+        // find slope
+        Eigen::MatrixXf centered = matPoints.rowwise() - matPoints.colwise().mean();
+        Eigen::MatrixXf cov = (centered.adjoint() * centered);
+        cv::eigen2cv(cov, matCov); // copy data from eigen to cv::Mat
+        cv::eigen(matCov, matEig, matVec); // find eigenvalues and eigenvectors for the covariance matrix
+
+        float slopeAngle = (std::acos(std::abs(matVec.at<float>(2, 2))) / M_PI) * 180;
+
+        if (std::isnan(slopeAngle))
+        {
+            RCLCPP_ERROR(this->get_logger(), "Slope: %f", slopeAngle);
+            return;
+        }   
+
+        // Option 1: occupancy as an exponential function
+        float occupancy = 1.0f / (1.0f + exp(-(slopeAngle - filterAngleLimit)));
+
+        // float occupancy = 0.5 * (slopeAngle / filterAngleLimit)
+        //                 + 0.5 * (maxDifference / filterHeightLimit);
+
+        // if (slopeAngle > filterAngleLimit || maxDifference > filterHeightLimit)
+        //     thisPoint.intensity = 100;
+
+
+        // // ===== OPTION 2: Pure Slope Gradient =====
+        // float minSlope = 0.0;   // degrees
+        // float maxSlope = 35.0;  // degrees
+
+        // float occupancy;
+        // if (slopeAngle <= minSlope) {
+        //     occupancy = 0.0;
+        // } else if (slopeAngle >= maxSlope) {
+        //     occupancy = 1.0;
+        // } else {
+        //     occupancy = (slopeAngle - minSlope) / (maxSlope - minSlope);
+        // }
+                
+        
+       // ===== PRINT CELL POSITION AND SLOPE =====
+       if (slopeAngle > 10)
+       {
+            RCLCPP_INFO(this->get_logger(), 
+                "Cell [%.2f, %.2f, %.2f] | Slope: %.2f° | Occupancy: %.3f | Neighbors: %zu", 
+                cell->xyz->x, 
+                cell->xyz->y, 
+                cell->elevation,
+                slopeAngle,
+                occupancy,
+                neighborPoints.size());
+       }
+        
+        cell->updateOccupancy(occupancy);  
     }
+
 
     void getNeighborCells(mapCell_t *cell, vector<PointType> &neighborPoints){
         // Get neighboring cells within a radius for analysis
-        float searchRadius = 0.5; // meters
+        float searchRadius = 0.2; // meters
         int searchGrids = searchRadius / mapResolution;
 
         grid_t grid = cell->grid;
