@@ -51,7 +51,7 @@ public:
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         subFilteredGroundCloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/filtered_pointcloud", 5, std::bind(&TraversabilityMapping::cloudHandler, this, std::placeholders::_1));
+            "/cloud_pcd", 5, std::bind(&TraversabilityMapping::cloudHandler, this, std::placeholders::_1));
 
         pubOccupancyMapLocal = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_map_local", 5);
         pubOccupancyMapLocalHeight = this->create_publisher<elevation_msgs::msg::OccupancyElevation>("/occupancy_map_local_height", 5);
@@ -358,11 +358,8 @@ public:
 
         float occupancy;
         float slopeCost;
-        if (slopeAngle >= filterAngleLimit) {
-            slopeCost = 1.0;
-        } else {
-            slopeCost = slopeAngle / filterAngleLimit;
-        }
+        slopeCost = slopeAngle / filterAngleLimit;
+        slopeCost = std::min(slopeCost, 1.0f);
 
         Eigen::Vector3f normal(
             matVec.at<float>(2, 0),
@@ -387,21 +384,23 @@ public:
 
         mean /= N;
         roughness = std::sqrt(sq_sum / N - mean * mean);
+        roughness = roughness / filterMaxRoughness;
+        roughness = std::min(roughness, 1.0f);
         occupancy = slopeCoeff * slopeCost + roughnessCoeff * roughness;
 
-        //    ===== PRINT CELL POSITION AND SLOPE =====
-       if (slopeAngle > 20)
-       {
-            RCLCPP_INFO(this->get_logger(), 
-                "Cell [%.2f, %.2f, %.2f] | Slope: %.2f° | Occupancy: %.3f | Roughness: %.3f | Neighbors: %zu", 
-                cell->xyz->x, 
-                cell->xyz->y, 
-                cell->elevation,
-                slopeAngle,
-                occupancy,
-                roughness,
-                neighborPoints.size());
-       }
+    //     //    ===== PRINT CELL POSITION AND SLOPE =====
+    //    if (slopeAngle > 20)
+    //    {
+    //         RCLCPP_INFO(this->get_logger(), 
+    //             "Cell [%.2f, %.2f, %.2f] | Slope: %.2f° | Occupancy: %.3f | Roughness: %.3f | Neighbors: %zu", 
+    //             cell->xyz->x, 
+    //             cell->xyz->y, 
+    //             cell->elevation,
+    //             slopeAngle,
+    //             occupancy,
+    //             roughness,
+    //             neighborPoints.size());
+    //    }
         
         cell->updateOccupancy(occupancy);  
     }
