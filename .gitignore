@@ -1,0 +1,28 @@
+# Except these directories
+# !src/
+# !include/
+# !launch/
+# !config/
+# !msg/
+# !srv/
+# !action/
+# !urdf/
+# !CMakeLists.txt
+# !package.xml
+# !*.md
+# !*.yaml
+# !*.yml
+# !*.py
+
+# Ignore development and build artifacts
+build/
+install/
+log/
+.vscode/
+
+# Colcon/Misc
+.colcon/
+*.pyc
+__pycache__/
+
+
