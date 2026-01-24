@@ -334,11 +334,11 @@ public:
         float maxElevation = matPoints.col(2).maxCoeff();
         float maxDifference = maxElevation - minElevation;
 
-        if (maxDifference > filterHeightLimit) {  // filterHeightLimit = 0.5m
-            RCLCPP_ERROR(this->get_logger(), "Large height difference: %.2f m", maxDifference);
-            cell->updateOccupancy(1.0);
-            return;
-        }
+        // if (maxDifference > filterHeightLimit) {  // filterHeightLimit = 0.5m
+        //     RCLCPP_ERROR(this->get_logger(), "Large height difference: %.2f m", maxDifference);
+        //     cell->updateOccupancy(1.0);
+        //     return;
+        // }
 
         // ===== Calculate Slope =====
         // find slope
@@ -349,46 +349,57 @@ public:
 
         float slopeAngle = (std::acos(std::abs(matVec.at<float>(2, 2))) / M_PI) * 180;
 
-        if (std::isnan(slopeAngle))
-        {
-            RCLCPP_ERROR(this->get_logger(), "Slope: %f", slopeAngle);
-            return;
-        }   
-
-        // Option 1: occupancy as an exponential function
-        float occupancy = 1.0f / (1.0f + exp(-(slopeAngle - filterAngleLimit)));
-
-        // float occupancy = 0.5 * (slopeAngle / filterAngleLimit)
-        //                 + 0.5 * (maxDifference / filterHeightLimit);
-
-        // if (slopeAngle > filterAngleLimit || maxDifference > filterHeightLimit)
-        //     thisPoint.intensity = 100;
-
-
-        // // ===== OPTION 2: Pure Slope Gradient =====
-        // float minSlope = 0.0;   // degrees
-        // float maxSlope = 35.0;  // degrees
-
-        // float occupancy;
-        // if (slopeAngle <= minSlope) {
-        //     occupancy = 0.0;
-        // } else if (slopeAngle >= maxSlope) {
-        //     occupancy = 1.0;
-        // } else {
-        //     occupancy = (slopeAngle - minSlope) / (maxSlope - minSlope);
-        // }
-                
+        // if (std::isnan(slopeAngle))
+        // {
+        //     RCLCPP_ERROR(this->get_logger(), "Slope: %f", slopeAngle);
+        //     return;
+        // }   
         
-       // ===== PRINT CELL POSITION AND SLOPE =====
-       if (slopeAngle > 10)
+
+        float occupancy;
+        float slopeCost;
+        if (slopeAngle >= filterAngleLimit) {
+            slopeCost = 1.0;
+        } else {
+            slopeCost = slopeAngle / filterAngleLimit;
+        }
+
+        Eigen::Vector3f normal(
+            matVec.at<float>(2, 0),
+            matVec.at<float>(2, 1),
+            matVec.at<float>(2, 2)
+        );
+
+        normal.normalize();
+        Eigen::Vector3f centroid = matPoints.colwise().mean();
+        float roughness = 0.0f;
+        float mean = 0.0f;
+        float sq_sum = 0.0f;
+
+        const int N = matPoints.rows();
+
+        for (int i = 0; i < N; ++i) {
+            Eigen::Vector3f p = matPoints.row(i);
+            float d = std::abs(normal.dot(p - centroid)); // orthogonal distance
+            mean += d;
+            sq_sum += d * d;
+        }
+
+        mean /= N;
+        roughness = std::sqrt(sq_sum / N - mean * mean);
+        occupancy = slopeCoeff * slopeCost + roughnessCoeff * roughness;
+
+        //    ===== PRINT CELL POSITION AND SLOPE =====
+       if (slopeAngle > 20)
        {
             RCLCPP_INFO(this->get_logger(), 
-                "Cell [%.2f, %.2f, %.2f] | Slope: %.2f° | Occupancy: %.3f | Neighbors: %zu", 
+                "Cell [%.2f, %.2f, %.2f] | Slope: %.2f° | Occupancy: %.3f | Roughness: %.3f | Neighbors: %zu", 
                 cell->xyz->x, 
                 cell->xyz->y, 
                 cell->elevation,
                 slopeAngle,
                 occupancy,
+                roughness,
                 neighborPoints.size());
        }
         

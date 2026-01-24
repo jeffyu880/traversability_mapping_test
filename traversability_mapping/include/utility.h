@@ -83,16 +83,26 @@ extern const int mapCubeArrayLength = mapCubeLength / mapResolution; // the grid
 extern const int mapArrayLength = 2000 / mapCubeLength; // the sub-map dimension of global map (2000m x 2000m)
 extern const int rootCubeIndex = mapArrayLength / 2; // by default, robot is at the center of global map at the beginning
 
+// Cost Params
+constexpr float slopeCoeff = 0.8;           // how much the slope contributes to cost
+constexpr float roughnessCoeff = 0.2;       // how much roughness contributes to cost
+
+// Static assertion to ensure coefficients sum to 1.0
+static_assert(
+    (slopeCoeff + roughnessCoeff) >= 0.999 && (slopeCoeff + roughnessCoeff) <= 1.001,
+    "slopeCoeff and roughnessCoeff must sum to 1.0"
+);
+
 // Filter Ring Params
 extern const int scanNumCurbFilter = 8;             // Not needed    
 extern const int scanNumSlopeFilter = 20;           // the number of lower scan for slope analysis
 extern const int scanNumMax = std::max(scanNumCurbFilter, scanNumSlopeFilter);
 
 // Filter Threshold Params
-extern const float sensorMaxRangeLimit = 20; // only keep points with in a radius of x meters   
+extern const float sensorMaxRangeLimit = 10; // only keep points with in a radius of x meters   
 extern const float sensorMinRangeLimit = 0.5; // remove points within a radius of 0.5 meters
-extern const float filterHeightLimit = (urbanMapping == true) ? 0.1 : 0.15; // step diff threshold         
-extern const float filterAngleLimit = 20; // slope angle threshold          
+extern const float filterHeightLimit = (urbanMapping == true) ? 0.1 : 0.3; // step diff threshold         
+extern const float filterAngleLimit = 45; // slope angle threshold          
 extern const int filterHeightMapArrayLength = sensorMaxRangeLimit*2 / mapResolution;    // size of the local height mat grid
 
 // BGK Prediction Params
