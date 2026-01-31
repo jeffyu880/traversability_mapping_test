@@ -51,10 +51,12 @@ public:
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         subFilteredGroundCloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/cloud_pcd", 5, std::bind(&TraversabilityMapping::cloudHandler, this, std::placeholders::_1));
+            "/filtered_pointcloud", 10, std::bind(&TraversabilityMapping::cloudHandler, this, std::placeholders::_1));
 
-        pubOccupancyMapLocal = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_map_local", 5);
-        pubOccupancyMapLocalHeight = this->create_publisher<elevation_msgs::msg::OccupancyElevation>("/occupancy_map_local_height", 5);
+        // /filtered_pointcloud
+
+        pubOccupancyMapLocal = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_map_local", 10);
+        pubOccupancyMapLocalHeight = this->create_publisher<elevation_msgs::msg::OccupancyElevation>("/occupancy_map_local_height", 10);
         pubElevationCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/elevation_pointcloud", 5);
 
         allocateMemory();
@@ -86,17 +88,37 @@ public:
     /////////////////////////////////////////// Register Cloud /////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     void cloudHandler(const sensor_msgs::msg::PointCloud2::SharedPtr laserCloudMsg){
-        // Lock thread
+        auto start = std::chrono::high_resolution_clock::now();
+        
         std::lock_guard<std::mutex> lock(mtx);
-        // Get Robot Position
-        if (getRobotPosition() == false) 
-            return;
-        // Convert Point Cloud
+        
+        auto t1 = std::chrono::high_resolution_clock::now();
+        if (getRobotPosition() == false) return;
+        
+        auto t2 = std::chrono::high_resolution_clock::now();
         pcl::fromROSMsg(*laserCloudMsg, *laserCloud);
-        // Register New Scan
+        
+        auto t3 = std::chrono::high_resolution_clock::now();
         updateElevationMap();
-        // publish local occupancy grid map
+        
+        auto t4 = std::chrono::high_resolution_clock::now();
         publishMap();
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        
+        // Print timing breakdown
+        auto lock_time = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - start).count();
+        auto tf_time = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+        auto convert_time = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+        auto update_time = std::chrono::duration_cast<std::chrono::milliseconds>(t4 - t3).count();
+        auto publish_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - t4).count();
+        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+        
+        if (total_time > 100) {  // If processing takes > 100ms
+            RCLCPP_WARN(this->get_logger(), 
+                "Slow processing: total=%ldms (lock=%ld, tf=%ld, convert=%ld, update=%ld, publish=%ld)",
+                total_time, lock_time, tf_time, convert_time, update_time, publish_time);
+        }
     }
 
     void updateElevationMap(){
@@ -149,27 +171,28 @@ public:
         observingList1.push_back(cell);
     }
 
-    void updateOccupancyBel(mapCell_t *cell, bool occupied){
-        if (occupied == true)
-            cell->log_odds += log(p_occupied_when_laser / (1 - p_occupied_when_laser));
-        else
-            cell->log_odds += log(p_occupied_when_no_laser / (1 - p_occupied_when_no_laser));
+    // Not used
+    // void updateOccupancyBel(mapCell_t *cell, bool occupied){
+    //     if (occupied == true)
+    //         cell->log_odds += log(p_occupied_when_laser / (1 - p_occupied_when_laser));
+    //     else
+    //         cell->log_odds += log(p_occupied_when_no_laser / (1 - p_occupied_when_no_laser));
 
-        if (cell->log_odds < -large_log_odds)
-            cell->log_odds = -large_log_odds;
-        else if (cell->log_odds > large_log_odds)
-            cell->log_odds = large_log_odds;
+    //     if (cell->log_odds < -large_log_odds)
+    //         cell->log_odds = -large_log_odds;
+    //     else if (cell->log_odds > large_log_odds)
+    //         cell->log_odds = large_log_odds;
 
-        if (cell->log_odds >= 0)
-            cell->updateOccupancy(float(1.0 - 1.0/(1.0 + exp(cell->log_odds))));
-        else
-            cell->updateOccupancy(float(1.0/(1.0 + exp(-cell->log_odds))));
-    }
+    //     if (cell->log_odds >= 0)
+    //         cell->updateOccupancy(float(1.0 - 1.0/(1.0 + exp(cell->log_odds))));
+    //     else
+    //         cell->updateOccupancy(float(1.0/(1.0 + exp(-cell->log_odds))));
+    // }
 
     void updateElevationBGK(mapCell_t *cell, PointType *point){
         // Skip updating elevation if we have observed this cell enough times
-        if (cell->observeTimes > traversabilityObserveTimeTh)
-            return;
+        // if (cell->observeTimes > traversabilityObserveTimeTh)
+        //     return;
 
         float z = point->z;
         float var = 0.01; // measurement noise
@@ -188,9 +211,20 @@ public:
     }
 
     void getPointCubeIndex(int *cubeX, int *cubeY, PointType *point){
+        // Convert world coordinates (meters) to submap grid indices
+        // Each submap is mapCubeLength × mapCubeLength (10m × 10m)
+        // rootCubeIndex shifts the coordinate system to handle negative coordinates
+        
+        // Calculate which submap grid cell the point belongs to
+        // Add mapCubeLength/2.0 to handle points centered on grid boundaries
+        // Divide by mapCubeLength to get grid index
+        // Add rootCubeIndex to offset from origin (allows negative world coordinates)
         *cubeX = int((point->x + mapCubeLength/2.0) / mapCubeLength) + rootCubeIndex;
         *cubeY = int((point->y + mapCubeLength/2.0) / mapCubeLength) + rootCubeIndex;
 
+        // Handle negative coordinates correctly
+        // Integer division rounds toward zero, but we need floor behavior for negative numbers
+        // If point is in negative territory, decrement the index by 1
         if (point->x + mapCubeLength/2.0 < 0)  --*cubeX;
         if (point->y + mapCubeLength/2.0 < 0)  --*cubeY;
     }
@@ -205,16 +239,21 @@ public:
     }
 
     void traversabilityMapCalculation(){
-        // Lock thread to get the latest observations
-        std::lock_guard<std::mutex> lock(mtx);
-        observingList2 = observingList1;
-        observingList1.clear();
-
-        // Calculate traversability for recently observed cells
-        for (auto cell : observingList2) {
+        // Copy data with lock
+        vector<mapCell_t*> cellsToProcess;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            
+            if (observingList1.empty())
+                return;
+            
+            cellsToProcess.swap(observingList1);  // Fast swap
+        } 
+        
+        // Process without lock
+        for (auto cell : cellsToProcess) {
             calculateTraversability(cell);
         }
-        observingList2.clear();
     }
 
     void calculateTraversability(mapCell_t *cell)

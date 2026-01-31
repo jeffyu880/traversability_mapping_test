@@ -45,9 +45,9 @@ public:
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
         subCloud = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/ouster_points", 5, std::bind(&TraversabilityFilter::cloudHandler, this, std::placeholders::_1));
+            "/ouster_points", 10, std::bind(&TraversabilityFilter::cloudHandler, this, std::placeholders::_1));
 
-        pubCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud", 5);
+        pubCloud = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud", 10);
         pubCloudVisualHiRes = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud_visual_high_res", 5);
         pubCloudVisualLowRes = this->create_publisher<sensor_msgs::msg::PointCloud2>("/filtered_pointcloud_visual_low_res", 5);
         pubLaserScan = this->create_publisher<sensor_msgs::msg::LaserScan>("/pointcloud_2_laserscan", 5);
@@ -125,7 +125,7 @@ public:
         // RCLCPP_INFO(this->get_logger(), "✓ Cloud converted to matrix");
         
         // // Step 4: Apply obstacle detection filters (curbs, slopes, distance)
-        // applyFilter(); // Not used since we are using a gradient, so no obstacles defined here?
+        // applyFilter(); // Not used since we are using a gradient, so no obstacles defined here
         // RCLCPP_INFO(this->get_logger(), "✓ Filters applied");
         
         // Step 5: Extract filtered points with obstacle labels
@@ -144,8 +144,8 @@ public:
         publishCloud();
         // RCLCPP_INFO(this->get_logger(), "✓ Cloud published");
         
-        // Step 9: Convert obstacles to 2D laser scan for navigation
-        publishLaserScan();
+        // Step 9: Convert obstacles to 2D laser scan for navigatio -> not used as just using a gradiant based map
+        // publishLaserScan();
         // RCLCPP_INFO(this->get_logger(), "✓ Laser scan published");
         
         // Step 10: Clean up for next iteration
@@ -265,128 +265,47 @@ public:
         }
     }
 
-    void applyFilter(){
+    // void applyFilter(){
 
-        if (urbanMapping == true){
-            positiveCurbFilter();
-            negativeCurbFilter();
-        }
+    //     // minDistFilter();
+    //     // slopeFilter();
+    // }
+
+    // void slopeFilter(){
         
-        // minDistFilter();
-        // slopeFilter();
-    }
-
-    // Detects upward obstacles, things that the robot needs to climb over 
-    void positiveCurbFilter(){
-        int rangeCompareNeighborNum = 3;
-        float diff[Horizon_SCAN - 1];
-
-        for (int i = 0; i < scanNumCurbFilter; ++i){
-            // calculate range difference
-            for (int j = 0; j < Horizon_SCAN - 1; ++j)
-                diff[j] = rangeMatrix.at<float>(i, j) - rangeMatrix.at<float>(i, j+1);
-
-            for (int j = rangeCompareNeighborNum; j < Horizon_SCAN - rangeCompareNeighborNum; ++j){
-
-                // Point that has been verified by other filters
-                if (obstacleMatrix.at<int>(i, j) == 1)
-                    continue;
-
-                bool breakFlag = false;
-                // point is too far away, skip comparison since it can be inaccurate
-                if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit)
-                    continue;
-                // make sure all points have valid range info
-                for (int k = -rangeCompareNeighborNum; k <= rangeCompareNeighborNum; ++k)
-                    if (rangeMatrix.at<float>(i, j+k) == -1){
-                        breakFlag = true;
-                        break;
-                    }
-                if (breakFlag == true) continue;
-                // range difference should be monotonically increasing or decresing
-                for (int k = -rangeCompareNeighborNum; k < rangeCompareNeighborNum-1; ++k)
-                    if (diff[j+k] * diff[j+k+1] <= 0){
-                        breakFlag = true;
-                        break;
-                    }
-                if (breakFlag == true) continue;
-                // the range difference between the start and end point of neighbor points is smaller than a threashold, then continue
-                if (abs(rangeMatrix.at<float>(i, j-rangeCompareNeighborNum) - rangeMatrix.at<float>(i, j+rangeCompareNeighborNum)) /rangeMatrix.at<float>(i, j) < 0.03)
-                    continue;
-                // if "continue" is not used at this point, it is very likely to be an obstacle point
-                obstacleMatrix.at<int>(i, j) = 1;
-            }
-        }
-    }
-
-    // Detects downwards obstacles, things that the robot may fall into
-    void negativeCurbFilter(){
-        int rangeCompareNeighborNum = 3;
-
-        for (int i = 0; i < scanNumCurbFilter; ++i){
-            for (int j = 0; j < Horizon_SCAN; ++j){
-                // Point that has been verified by other filters
-                if (obstacleMatrix.at<int>(i, j) == 1)
-                    continue;
-                // point without range value cannot be verified
-                if (rangeMatrix.at<float>(i, j) == -1)
-                    continue;
-                // point is too far away, skip comparison since it can be inaccurate
-                if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit)
-                    continue;
-                // check neighbors
-                for (int m = -rangeCompareNeighborNum; m <= rangeCompareNeighborNum; ++m){
-                    int k = j + m;
-                    if (k < 0 || k >= Horizon_SCAN)
-                        continue;
-                    if (rangeMatrix.at<float>(i, k) == -1)
-                        continue;
-                    // height diff greater than threashold, might be a negative curb
-                    if (laserCloudMatrix[i][j].z - laserCloudMatrix[i][k].z > 0.1
-                        && pointDistance(laserCloudMatrix[i][j], laserCloudMatrix[i][k]) <= 1.0){
-                        obstacleMatrix.at<int>(i, j) = 1;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    void slopeFilter(){
-        
-        for (int i = 0; i < scanNumSlopeFilter; ++i){
-            for (int j = 0; j < Horizon_SCAN; ++j){
-                // Point that has been verified by other filters
-                if (obstacleMatrix.at<int>(i, j) == 1)
-                    continue;
-                // point without range value cannot be verified
-                if (rangeMatrix.at<float>(i, j) == -1 || rangeMatrix.at<float>(i+1, j) == -1)
-                    continue;
-                // point is too far away, skip comparison since it can be inaccurate
-                if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit)
-                    continue;
-                // Two range filters here:
-                // 1. if a point's range is larger than scanNumSlopeFilter th ring point's range
-                // 2. if a point's range is larger than the upper point's range
-                // then this point is very likely on obstacle. i.e. a point under the car or on a pole
-                // if (  (rangeMatrix.at<float>(scanNumSlopeFilter, j) != -1 && rangeMatrix.at<float>(i, j) > rangeMatrix.at<float>(scanNumSlopeFilter, j))
-                //     || (rangeMatrix.at<float>(i, j) > rangeMatrix.at<float>(i+1, j)) ){
-                //     obstacleMatrix.at<int>(i, j) = 1;
-                //     continue;
-                // }
-                // Calculate slope angle
-                float diffX = laserCloudMatrix[i+1][j].x - laserCloudMatrix[i][j].x;
-                float diffY = laserCloudMatrix[i+1][j].y - laserCloudMatrix[i][j].y;
-                float diffZ = laserCloudMatrix[i+1][j].z - laserCloudMatrix[i][j].z;
-                float angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY)) * 180 / M_PI;
-                // Slope angle is larger than threashold, mark as obstacle point TODO: This may not be good cause slope is lower at higher elevations
-                // if (angle < -filterAngleLimit || angle > filterAngleLimit){
-                //     obstacleMatrix.at<int>(i, j) = 1;
-                //     continue;
+    //     for (int i = 0; i < scanNumSlopeFilter; ++i){
+    //         for (int j = 0; j < Horizon_SCAN; ++j){
+    //             // Point that has been verified by other filters
+    //             if (obstacleMatrix.at<int>(i, j) == 1)
+    //                 continue;
+    //             // point without range value cannot be verified
+    //             if (rangeMatrix.at<float>(i, j) == -1 || rangeMatrix.at<float>(i+1, j) == -1)
+    //                 continue;
+    //             // point is too far away, skip comparison since it can be inaccurate
+    //             if (rangeMatrix.at<float>(i, j) > sensorMaxRangeLimit)
+    //                 continue;
+    //             // Two range filters here:
+    //             // 1. if a point's range is larger than scanNumSlopeFilter th ring point's range
+    //             // 2. if a point's range is larger than the upper point's range
+    //             // then this point is very likely on obstacle. i.e. a point under the car or on a pole
+    //             // if (  (rangeMatrix.at<float>(scanNumSlopeFilter, j) != -1 && rangeMatrix.at<float>(i, j) > rangeMatrix.at<float>(scanNumSlopeFilter, j))
+    //             //     || (rangeMatrix.at<float>(i, j) > rangeMatrix.at<float>(i+1, j)) ){
+    //             //     obstacleMatrix.at<int>(i, j) = 1;
+    //             //     continue;
+    //             // }
+    //             // Calculate slope angle
+    //             float diffX = laserCloudMatrix[i+1][j].x - laserCloudMatrix[i][j].x;
+    //             float diffY = laserCloudMatrix[i+1][j].y - laserCloudMatrix[i][j].y;
+    //             float diffZ = laserCloudMatrix[i+1][j].z - laserCloudMatrix[i][j].z;
+    //             float angle = atan2(diffZ, sqrt(diffX*diffX + diffY*diffY)) * 180 / M_PI;
+    //             // Slope angle is larger than threashold, mark as obstacle point TODO: This may not be good cause slope is lower at higher elevations
+    //             // if (angle < -filterAngleLimit || angle > filterAngleLimit){
+    //             //     obstacleMatrix.at<int>(i, j) = 1;
+    //             //     continue;
                 
-            }
-        }
-    }
+    //         }
+    //     }
+    // }
 
     void extractFilteredCloud(){
         for (int i = 0; i < N_SCAN; ++i){
@@ -407,8 +326,8 @@ public:
             sensor_msgs::msg::PointCloud2 laserCloudTemp;
             pcl::toROSMsg(*laserCloudOut, laserCloudTemp);
             // ADD THIS DEBUG PRINT:
-            RCLCPP_INFO(this->get_logger(), "laserCloudTemp contains %d points", 
-            laserCloudTemp.width * laserCloudTemp.height);
+            // RCLCPP_INFO(this->get_logger(), "laserCloudTemp contains %d points", 
+            // laserCloudTemp.width * laserCloudTemp.height);
 
             laserCloudTemp.header.stamp = this->get_clock()->now();
             laserCloudTemp.header.frame_id = "map";
@@ -433,9 +352,9 @@ public:
             // points out of boundry
             if (idx < 0 || idy < 0 || idx >= filterHeightMapArrayLength || idy >= filterHeightMapArrayLength)
                 continue;
-            // obstacle point (decided by curb or slope filter)
-            if (laserCloudOut->points[i].intensity == 100)
-                obstFlag[idx][idy] = true;
+            // // obstacle point (decided by curb or slope filter)
+            // if (laserCloudOut->points[i].intensity == 100)
+            //     obstFlag[idx][idy] = true;
             // save min and max height of a grid
             if (initFlag[idx][idy] == false){
                 minHeight[idx][idy] = laserCloudOut->points[i].z;
@@ -460,14 +379,14 @@ public:
                 thisPoint.y = localMapOrigin.y + j * mapResolution + mapResolution / 2.0;
                 thisPoint.z = maxHeight[i][j];
 
-                if (obstFlag[i][j] == true || maxHeight[i][j] - minHeight[i][j] > filterHeightLimit){
-                    obstFlag[i][j] = true;
-                    thisPoint.intensity = 100; // obstacle
-                    laserCloudTemp->push_back(thisPoint);
-                }else{
-                    thisPoint.intensity = 0; // free
-                    laserCloudTemp->push_back(thisPoint);
-                }
+                // if (obstFlag[i][j] == true || maxHeight[i][j] - minHeight[i][j] > filterHeightLimit){
+                //     obstFlag[i][j] = true;
+                //     thisPoint.intensity = 100; // obstacle
+                //     laserCloudTemp->push_back(thisPoint);
+                // }else{
+                thisPoint.intensity = 0; // free
+                laserCloudTemp->push_back(thisPoint);
+                //}
             }
         }
 
